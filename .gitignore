@@ -1,0 +1,41 @@
+# macOS and editor artifacts
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Python caches and virtual environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Generated builds and application bundles
+.build/
+build/
+dist/
+DerivedData/
+*.app/
+*.dSYM/
+xcuserdata/
+*.xcuserstate
+
+# Local state, logs, and credentials
+*.log
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519

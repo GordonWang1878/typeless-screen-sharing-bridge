@@ -1,0 +1,459 @@
+#!/usr/bin/env bash
+# Typeless Remote Bridge setup wizard. Run it only on the Mac you talk to (the one with
+# Typeless). Each run adds one Mac you control with Screen Sharing: it connects to that Mac,
+# installs the receiver there over SSH, walks you through the permission switches (the remote
+# one through your Screen Sharing window), and ends with a live test. Run it again to add or
+# remove a Mac, upgrade everything, or uninstall.
+#
+# Talks in the system language (Chinese or English; TB_LANG=zh|en overrides).
+# All real work is done by install/typeless-bridge.sh; this file only guides.
+set -uo pipefail
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENGINE="${TB_ENGINE:-$REPO/install/typeless-bridge.sh}"
+BUILDER="${TB_BUILDER:-$REPO/install/build_apps.sh}"
+LAUNCHCTL="${TB_LAUNCHCTL:-launchctl}"
+TCCUTIL="${TB_TCCUTIL:-tccutil}"
+TTY="${TB_TTY:-/dev/tty}"
+ROOT="$HOME/Library/Application Support/TypelessRemoteBridge"
+APPS="$ROOT/Apps"
+LOGS="$HOME/Library/Logs/TypelessRemoteBridge"
+BUILT="$HOME/.local/share/typeless-remote-bridge-build"
+REMOTE_DIR='.local/share/typeless-remote-bridge-receiver'   # relative to the remote home; not the wizard's own folder
+PANE_PERMISSION="x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+RECEIVER_ID=org.local.typelessbridge.receiver
+SENDER_APPS=(TypelessBridgeGuard TypelessBridgeProbe)
+HINT_AFTER="${TB_HINT_AFTER:-15}"   # polls (2 s each) before a waiting step says what to check
+
+# ---------- language and output ----------
+system_is_chinese() {
+  case ${TB_LANG:-} in zh) return 0 ;; en) return 1 ;; esac
+  defaults read -g AppleLanguages 2>/dev/null | tr -d ' \n"(' | cut -d, -f1 | grep -q '^zh'
+}
+if system_is_chinese; then ZH=1; else ZH=0; fi
+t() { if ((ZH)); then printf '%s' "$1"; else printf '%s' "$2"; fi; }
+say() { printf '%s\n' "$(t "$1" "$2")"; }
+title() { printf '\n\033[1m%s\033[0m\n' "$(t "$1" "$2")"; }
+ok() { printf '  \033[32m✓\033[0m %s\n' "$(t "$1" "$2")"; }
+bad() { printf '  \033[31m✗\033[0m %s\n' "$(t "$1" "$2")"; }
+fail() { printf '\n\033[31m%s\033[0m\n' "$(t "$1" "$2")" >&2; exit 1; }
+drain_input() {  # forget keys typed while the wizard was busy, so they cannot answer a question
+  [[ -t 3 ]] || return 0
+  local junk; while IFS= read -r -t 1 -u 3 junk; do :; done
+  return 0
+}
+ask() {  # ask <zh prompt> <en prompt> [default] -> answer on stdout
+  local answer
+  drain_input
+  printf '%s ' "$(t "$1" "$2")" >&2
+  IFS= read -r -u 3 answer || answer=""
+  printf '%s' "${answer:-${3:-}}"
+}
+yes_no() { local a; a=$(ask "$1 [Y/n]" "$2 [Y/n]" y); [[ $a == y || $a == Y || $a == yes ]]; }
+
+# ---------- pure helpers (unit-tested) ----------
+slug() {  # "Alice's Studio" -> alice-s-studio (a valid destination name)
+  printf '%s' "$1" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9' '-' | tr -s '-' | sed -e 's/^-*//' -e 's/-*$//' | cut -c1-32 \
+    | sed -e 's/-*$//'
+}
+parse_browse() {  # dns-sd -B output -> one instance name per line
+  awk '$2 == "Add" { $1 = $2 = $3 = $4 = $5 = $6 = ""; sub(/^ +/, ""); print }' | awk '!seen[$0]++'
+}
+parse_resolve() {  # dns-sd -L output -> host name without trailing dot and port
+  sed -n 's/.*can be reached at \([^ :]*\)\.:[0-9]*.*/\1/p' | head -1
+}
+same_name() { [[ $(printf '%s' "$1" | tr 'A-Z' 'a-z') == "$(printf '%s' "$2" | tr 'A-Z' 'a-z')" ]]; }
+
+# ---------- state ----------
+option() { sed -n "s/^options .*$1=\([^ ]*\).*/\1/p" "$ROOT/manifest" 2>/dev/null; }
+destinations() { local d; d=$(option sender); [[ -z $d || $d == none ]] || printf '%s' "$d" | tr ',' ' '; }
+
+# ---------- local checks ----------
+have_tools() { xcrun --find swiftc >/dev/null 2>&1; }
+have_python() { /usr/bin/python3 -c '' >/dev/null 2>&1; }
+typeless_ready() { [[ -e "$HOME/Library/Application Support/Typeless/typeless.db" ]]; }
+check_trust_output() {  # launch an app with open, so macOS checks the app and not this terminal
+  local out answer i; out=$(mktemp "${TMPDIR:-/tmp}/tb-trust.XXXXXX")
+  open -n -g --stdout "$out" "$1" --args --check-trust >/dev/null 2>&1
+  for i in 1 2 3 4 5 6 7 8 9 10; do [[ -s $out ]] && break; sleep 0.3; done
+  answer=$(cat "$out" 2>/dev/null); rm -f "$out"; printf '%s' "$answer"
+}
+local_trusted() { [[ $(check_trust_output "$APPS/$1.app") == trusted ]]; }
+local_all_trusted() { local a; while IFS= read -r a; do local_trusted "$a" || return 1; done < <(local_apps); }
+bundle_id() { /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APPS/$1.app/Contents/Info.plist" 2>/dev/null; }
+SENDER_MARK=0
+sender_ready() { tail -n +"$((SENDER_MARK + 1))" "$LOGS/sender.log" 2>/dev/null | grep -q PILOT_READY; }
+
+# ---------- remote ----------
+rssh() { ssh -T -o BatchMode=yes -o ConnectTimeout=5 "$1" "$2" </dev/null; }
+RAPP='$HOME/Library/Application Support/TypelessRemoteBridge/Apps/TypelessBridgeReceiver.app'
+remote_trusted() {
+  rssh "$1" "o=\$(mktemp); open -n -g --stdout \"\$o\" \"$RAPP\" --args --check-trust; for i in 1 2 3 4 5 6 7 8 9 10; do [ -s \"\$o\" ] && break; sleep 0.3; done; cat \"\$o\"; rm -f \"\$o\"" 2>/dev/null \
+    | grep -qx trusted
+}
+remote_health() {
+  printf '{"op":"health"}\n' | ssh -T -o BatchMode=yes -o ConnectTimeout=5 "$1" \
+    '/usr/bin/nc -U -w 3 "$HOME/.local/state/typeless-remote-bridge/receiver.sock"' 2>/dev/null | grep -q '"ready"'
+}
+REMOTE=""
+remote_check() { remote_trusted "$REMOTE"; }
+remote_ready() { remote_health "$REMOTE"; }
+
+# ---------- waiting with a hint ----------
+FRAMES=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
+FRAME=0
+spin() {  # one frame of the spinner with a message
+  printf '\r\033[K    \033[36m%s\033[0m %s' "${FRAMES[$((FRAME % 10))]}" "$1"; FRAME=$((FRAME + 1))
+}
+wait_for() {  # wait_for <check> <zh what we wait for> <en> [zh hint] [en hint]: spinner until true
+  "$1" && return 0
+  local msg n=0 k; msg=$(t "$2" "$3")
+  while :; do
+    for k in 1 2 3 4 5 6 7 8 9 10; do spin "$msg"; sleep 0.2; done
+    "$1" && break
+    n=$((n + 1))
+    if ((n == ${6:-$HINT_AFTER})) && [[ -n ${4:-} ]]; then printf '\r\033[K    \033[33m%s\033[0m\n' "$(t "$4" "$5")"; fi
+  done
+  printf '\r\033[K'
+}
+busy() {  # busy <zh> <en> <command...>: run it with a spinner; its output goes to $BUILT/step.log
+  local msg rc; msg=$(t "$1" "$2"); shift 2
+  "$@" >"$BUILT/step.log" 2>&1 &
+  local pid=$!
+  while kill -0 "$pid" 2>/dev/null; do spin "$msg"; sleep 0.2; done
+  wait "$pid"; rc=$?
+  printf '\r\033[K'
+  return $rc
+}
+
+# ---------- terminal focus ----------
+TERMINAL_APP=""
+remember_terminal() {  # the app showing this wizard, to bring it back after System Settings
+  TERMINAL_APP=$(lsappinfo info -only bundleid "$(lsappinfo front 2>/dev/null)" 2>/dev/null \
+    | sed -n -e 's/.*"CFBundleIdentifier"="\([^"]*\)".*/\1/p' -e 's/.*bundleID="\([^"]*\)".*/\1/p' | head -1)
+  if [[ -z $TERMINAL_APP ]]; then
+    case ${TERM_PROGRAM:-} in Apple_Terminal) TERMINAL_APP=com.apple.Terminal ;; iTerm.app) TERMINAL_APP=com.googlecode.iterm2 ;; esac
+  fi
+}
+finale() {  # finale <zh line> <en line>: a clear, celebratory end
+  [[ -n $TERMINAL_APP ]] && open -b "$TERMINAL_APP" >/dev/null 2>&1
+  afplay /System/Library/Sounds/Hero.aiff >/dev/null 2>&1 &
+  printf '\n  \033[32m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n'
+  printf '\n     🎉  \033[1;32m%s\033[0m\n\n' "$(t "设置完成！" "All set!")"
+  printf '     %s\n' "$(t "$1" "$2")"
+  printf '\n  \033[32m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m\n\n'
+}
+back_to_terminal() {
+  [[ -n $TERMINAL_APP ]] && open -b "$TERMINAL_APP" >/dev/null 2>&1
+  afplay /System/Library/Sounds/Glass.aiff >/dev/null 2>&1 &
+  return 0
+}
+
+# ---------- steps ----------
+preflight() {
+  title "检查这台 Mac" "Checking this Mac"
+  typeless_ready || fail "这台 Mac 上没找到 Typeless。请在你说话的那台 Mac（装了 Typeless 并已登录）上运行本安装。" \
+    "Typeless was not found here. Run this on the Mac you talk to (with Typeless installed and signed in)."
+  ok "Typeless" "Typeless"
+  if ! have_tools; then
+    bad "缺少命令行开发工具，已弹出安装窗口，请点\"安装\"" \
+        "Command Line Tools are missing; an installer window has opened, click Install"
+    xcode-select --install >/dev/null 2>&1 || true
+    wait_for have_tools "等待安装完成（可能要几分钟）" "waiting for the installation (can take minutes)"
+  fi
+  have_python || fail "无法运行 /usr/bin/python3。" "/usr/bin/python3 does not run."
+  ok "命令行开发工具" "Command Line Tools"
+}
+
+BUILT_OK=""
+build_apps() {
+  [[ -n $BUILT_OK ]] && return 0
+  rm -rf "$BUILT/apps"
+  busy "正在准备程序（约 1 分钟）" "Preparing the apps (about a minute)" "$BUILDER" "$BUILT/apps" \
+    || { cat "$BUILT/step.log" >&2; fail "编译失败，详见上面的信息。" "Building failed; see above."; }
+  ok "程序已准备好" "Apps ready"
+  BUILT_OK=1
+}
+
+discover() {  # prints "name<TAB>host" for Macs on this network that offer Screen Sharing
+  local dir me name i=0 names=() host
+  dir=$(mktemp -d "${TMPDIR:-/tmp}/tb-dns.XXXXXX")
+  dns-sd -B _rfb._tcp local. >"$dir/browse" 2>/dev/null & local pid=$!
+  sleep 3; kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+  me=$(scutil --get ComputerName 2>/dev/null)
+  while IFS= read -r name; do
+    [[ $name == "$me" ]] && continue
+    names+=("$name")
+    dns-sd -L "$name" _rfb._tcp local. >"$dir/r$i" 2>/dev/null & echo $! >"$dir/p$i"
+    i=$((i + 1))
+  done < <(parse_browse <"$dir/browse")
+  if ((${#names[@]})); then
+    sleep 2
+    for ((i = 0; i < ${#names[@]}; i++)); do
+      kill "$(cat "$dir/p$i")" 2>/dev/null; wait "$(cat "$dir/p$i")" 2>/dev/null
+      host=$(parse_resolve <"$dir/r$i")
+      [[ -n $host ]] && printf '%s\t%s\n' "${names[$i]}" "$host"
+    done
+  fi
+  rm -rf "$dir"
+}
+
+PICK_NAME=""; PICK_HOST=""
+choose_mac() {
+  title "选择要控制的 Mac" "Choose the Mac to control"
+  local found=() line i=0 added pick label
+  added=" $(destinations) "
+  busy "正在查找局域网里开了屏幕共享的 Mac" "Looking for Macs with Screen Sharing on this network" discover
+  while IFS= read -r line; do found+=("$line"); done <"$BUILT/step.log"
+  for line in ${found[@]+"${found[@]}"}; do
+    i=$((i + 1)); label="${line%%$'\t'*}"
+    if [[ $added == *" $(slug "$label") "* ]]; then
+      printf '    %d) %s  %s\n' "$i" "$label" "$(t "（已添加）" "(already added)")"
+    else
+      printf '    %d) %s\n' "$i" "$label"
+    fi
+  done
+  say "    m) 不在列表里？手动输入地址" "    m) Not listed? Enter its address"
+  pick=$(ask "  输入要控制的那台的编号：" "  Number of the Mac to control:")
+  if [[ $pick == m ]]; then
+    PICK_HOST=$(ask "  地址（如 studio.local 或 192.168.1.20）：" "  Address (e.g. studio.local or 192.168.1.20):")
+    [[ -n $PICK_HOST ]] || fail "没有输入地址。" "No address given."
+    PICK_NAME=${PICK_HOST%%.*}
+  elif [[ $pick =~ ^[0-9]+$ ]] && ((pick >= 1 && pick <= ${#found[@]})); then
+    line=${found[$((pick - 1))]}; PICK_NAME=${line%%$'\t'*}; PICK_HOST=${line#*$'\t'}
+  else
+    fail "没有这个编号。" "No such number."
+  fi
+  [[ $added == *" $(slug "$PICK_NAME") "* ]] && fail "${PICK_NAME} 已经添加过了。" "$PICK_NAME is already added."
+  return 0
+}
+
+ssh_open() { ssh-keyscan -T 3 -t ed25519 "$PICK_HOST" 2>/dev/null | grep -q ssh-ed25519; }
+
+DEST=""
+connect() {  # log in to PICK_* once and set DEST
+  title "连接 $PICK_NAME" "Connecting to $PICK_NAME"
+  wait_for ssh_open "等待 $PICK_NAME 打开远程登录" "waiting for Remote Login on $PICK_NAME" \
+    "请在 $PICK_NAME 的屏幕共享窗口里：系统设置 → 通用 → 共享 → 打开\"远程登录\"。打开后这里会自动继续。" \
+    "In the Screen Sharing window of $PICK_NAME: System Settings → General → Sharing → turn on Remote Login. This continues by itself."
+  local fp user name attempt remote_name
+  user=$(whoami)
+  name=$(slug "$PICK_NAME"); [[ -n $name && $name != local ]] || name=mac
+  fp=$(ssh-keyscan -T 5 -t ed25519 "$PICK_HOST" 2>/dev/null | grep -v '^#' | head -1 | ssh-keygen -lf - | awk '{print $2}')
+  for attempt in 1 2; do
+    if ! rssh "$name" true >/dev/null 2>&1; then
+      say "  第一次连接需要登录：请输入你在 $PICK_NAME 上的开机密码（账户 ${user}）。" \
+          "  The first connection needs a login: enter your password on $PICK_NAME (account $user)."
+    fi
+    "$ENGINE" pair "$name" "$user@$PICK_HOST" --fingerprint "$fp" <&3 >/dev/null 2>"$BUILT/pair.log" && break
+    ((attempt == 2)) && fail "无法登录 ${PICK_NAME}。请确认账户名和密码，再运行一次。" \
+      "Could not log in to $PICK_NAME. Check the account and password, then run this again."
+    user=$(ask "  登录没成功。你在 $PICK_NAME 上的账户名是？" "  That did not work. What is your account name on $PICK_NAME?")
+    [[ -n $user ]] || fail "没有输入账户名。" "No account name given."
+  done
+  # The Mac that answered must be the Mac that was picked.
+  remote_name=$(rssh "$name" 'scutil --get ComputerName' 2>/dev/null)
+  if [[ $PICK_HOST == *.local && -n $remote_name ]] && ! same_name "$remote_name" "$PICK_NAME"; then
+    "$ENGINE" unpair "$name" >/dev/null 2>&1
+    fail "连上的是\"${remote_name}\"，不是你选的\"${PICK_NAME}\"，已停止。" \
+      "Reached \"$remote_name\", not \"$PICK_NAME\" as chosen; stopped."
+  fi
+  DEST=$name
+  ok "已连接 $PICK_NAME" "Connected to $PICK_NAME"
+}
+
+remote_payload() {  # remote_payload <dest>: copy the built receiver to <dest> and install it there
+  local stage rc; stage=$(mktemp -d "${TMPDIR:-/tmp}/tb-stage.XXXXXX")
+  cp -R "$REPO/install" "$REPO/service" "$stage/" && cp -R "$BUILT/apps" "$stage/built"
+  tar -C "$stage" -cf - . | ssh -T -o BatchMode=yes "$1" \
+    "rm -rf $REMOTE_DIR.new && mkdir -p $REMOTE_DIR.new && tar -C $REMOTE_DIR.new -xf - && rm -rf $REMOTE_DIR && mv $REMOTE_DIR.new $REMOTE_DIR"
+  rc=$?; rm -rf "$stage"; ((rc == 0)) || return $rc
+  rssh "$1" "bash $REMOTE_DIR/install/typeless-bridge.sh configure --receiver on --apps-dir $REMOTE_DIR/built"
+}
+install_remote() {  # install_remote <dest> <display name>
+  busy "正在把接收端装到 ${2}（约 10 秒）" "Installing the receiver on $2 (about 10 s)" remote_payload "$1" \
+    || { cat "$BUILT/step.log" >&2; fail "在 $2 上安装接收端失败。" "Installing the receiver on $2 failed."; }
+  ok "$2 上已装好接收端" "Receiver installed on $2"
+}
+
+grant_remote() {  # grant_remote <dest> <display name>
+  REMOTE=$1
+  if remote_trusted "$1"; then
+    ok "$2 上的授权已就绪" "Permission on $2 is in place"
+  else
+    # An approval from an older build still shows as ON but no longer applies: clear it, so the
+    # entry the user sees is the new one, switched off.
+    rssh "$1" "tccutil reset Accessibility $RECEIVER_ID" >/dev/null 2>&1
+    remote_trusted "$1"   # makes the new entry appear in the list
+    rssh "$1" "open '$PANE_PERMISSION'" >/dev/null 2>&1
+    title "在 $2 上授权" "Permission on $2"
+    say "  请切到 $2 的屏幕共享窗口，那边已打开\"隐私与安全性 → 设备控制\"。" \
+        "  Switch to the Screen Sharing window of $2: it shows Privacy & Security → Device Control."
+    say "  找到 TypelessBridgeReceiver（蓝绿色麦克风图标，按名字排在 Typeless 旁边），打开它的开关。" \
+        "  Find TypelessBridgeReceiver (blue-green microphone icon, next to Typeless by name) and switch it on."
+    wait_for remote_check "等待 $2 上的开关" "waiting for the switch on $2" \
+      "如果找不到它，或开关打开后这里没有反应：在 $2 上用 − 删掉 TypelessBridgeReceiver，它会自动重新出现，再打开一次。" \
+      "If you cannot find it, or nothing happens after switching it on: remove TypelessBridgeReceiver with − on $2; it reappears by itself, then switch it on again." \
+      $((HINT_AFTER * 2))
+    ok "$2 上已授权" "Allowed on $2"
+  fi
+  rssh "$1" "launchctl kickstart -k gui/\$(id -u)/$RECEIVER_ID" >/dev/null 2>&1 &
+  wait_for remote_ready "正在启动 $2 上的接收端（几秒钟）" "Starting the receiver on $2 (a few seconds)"
+  ok "$2 已可以接收文字" "$2 can now receive text"
+}
+
+local_apps() {  # every helper installed on this Mac (it may also be controlled by another Mac)
+  printf '%s\n' "${SENDER_APPS[@]}"
+  [[ $(option receiver) == 1 ]] && echo TypelessBridgeReceiver
+  return 0
+}
+grant_local() {
+  local a missing=()
+  # Reinstalling replaces every helper here, the receiver too, so check them all.
+  while IFS= read -r a; do local_trusted "$a" || missing+=("$a"); done < <(local_apps)
+  if ((${#missing[@]} == 0)); then
+    ok "这台 Mac 的授权已就绪" "Permissions on this Mac are in place"
+  else
+    for a in "${missing[@]}"; do "$TCCUTIL" reset Accessibility "$(bundle_id "$a")" >/dev/null 2>&1; done
+    for a in "${missing[@]}"; do local_trusted "$a"; done   # all entries appear at once
+    title "在这台 Mac 上授权" "Permission on this Mac"
+    say "  接下来会打开\"系统设置 → 隐私与安全性 → 设备控制\"，在列表里打开这些 App 的开关：" \
+        "  System Settings → Privacy & Security → Device Control will open. Switch these on in the list:"
+    for a in "${missing[@]}"; do printf '    • %s\n' "$a"; done
+    say "  它们都是蓝绿色麦克风图标，按名字排在 Typeless 旁边。" "  They have a blue-green microphone icon and sit next to Typeless by name."
+    say "  macOS 可能还会提示\"已添加后台项目\"，这是正常的。全部打开后，这个窗口会自动回来。" \
+        "  macOS may also say a background item was added; that is expected. When all are on, this window comes back."
+    ask "  按回车打开设置…" "  Press Enter to open Settings…" >/dev/null
+    open "$PANE_PERMISSION" >/dev/null 2>&1
+    wait_for local_all_trusted "等待开关打开" "waiting for the switches" \
+      "还在等：请确认上面列出的 App 都已打开。如已打开，用 − 删掉，它会自动重新出现，再打开一次。" \
+      "Still waiting: switch on all the apps listed above. If they are on, remove them with −; they reappear, then switch them on again."
+    back_to_terminal
+    ok "这台 Mac 已授权" "Allowed on this Mac"
+  fi
+  [[ $(option receiver) == 1 ]] && "$LAUNCHCTL" kickstart -k "gui/$(id -u)/$RECEIVER_ID" >/dev/null 2>&1 &
+  SENDER_MARK=$(wc -l <"$LOGS/sender.log" 2>/dev/null || echo 0)
+  "$LAUNCHCTL" kickstart -k "gui/$(id -u)/org.local.typelessbridge.sender" >/dev/null 2>&1 &
+  wait_for sender_ready "正在启动这台 Mac 上的桥接服务（约 10～30 秒）" "Starting the bridge on this Mac (10–30 s)"
+  ok "桥接服务已启动" "Bridge started"
+  return 0
+}
+
+live_test() {  # live_test <dest> <display name>
+  title "测试" "Test"
+  say "  打开 $2 的屏幕共享窗口，点进任意输入框，用 Typeless 说一句话。（按回车跳过）" \
+      "  Open the Screen Sharing window of $2, click into a text field and dictate something. (Enter skips)"
+  drain_input
+  local start line answer; start=$(wc -l <"$LOGS/sender.log" 2>/dev/null || echo 0)
+  local waiting; waiting=$(t "等你说话…" "Waiting for you to speak…")
+  while :; do
+    spin "$waiting"
+    if IFS= read -r -t 1 -u 3 answer; then printf '\r\033[K'; say "    已跳过测试" "    Test skipped"; return 0; fi
+    printf '\r\033[K'
+    line=$(tail -n +"$((start + 1))" "$LOGS/sender.log" 2>/dev/null | grep -E "RESULT " | tail -1)
+    case $line in
+      *paste-sent-unconfirmed*) ok "已送达 $2" "Delivered to $2"; return 0 ;;
+      *"RESULT local"*) say "    （前台不是屏幕共享：请先点一下 $2 的屏幕共享窗口）" "    (Screen Sharing was not in front: click the window of $2 first)"
+                        start=$(wc -l <"$LOGS/sender.log") ;;
+      *RESULT*) bad "没送达（${line##*RESULT }），请再说一次" "Not delivered (${line##*RESULT }); try again"
+                start=$(wc -l <"$LOGS/sender.log") ;;
+    esac
+  done
+}
+
+add_flow() {
+  preflight
+  choose_mac
+  build_apps
+  connect
+  install_remote "$DEST" "$PICK_NAME"
+  grant_remote "$DEST" "$PICK_NAME"
+  title "在这台 Mac 上安装" "Installing on this Mac"
+  busy "正在安装（几秒钟）" "Installing (a few seconds)" "$ENGINE" configure --add-sender "$DEST" --apps-dir "$BUILT/apps" \
+    || { cat "$BUILT/step.log" >&2; fail "安装失败。" "Install failed."; }
+  ok "已安装" "Installed"
+  grant_local
+  live_test "$DEST" "$PICK_NAME"
+  finale "现在在 $PICK_NAME 的屏幕共享窗口里，直接用 Typeless 说话就行 🎙️
+     要再添加一台 Mac，再运行一次安装命令。" \
+    "Just dictate with Typeless in the Screen Sharing window of $PICK_NAME 🎙️
+     To add another Mac, run the install command again."
+}
+
+pick_destination() {  # pick_destination <zh prompt> <en prompt> -> name on stdout
+  local list=() d i=0 n
+  for d in $(destinations); do list+=("$d"); i=$((i + 1)); printf '    %d) %s\n' "$i" "$d" >&2; done
+  n=$(ask "$1" "$2")
+  [[ $n =~ ^[0-9]+$ ]] && ((n >= 1 && n <= ${#list[@]})) || fail "没有这个编号。" "No such number."
+  printf '%s' "${list[$((n - 1))]}"
+}
+
+remove_flow() {
+  title "移除一台 Mac" "Remove a Mac"
+  local d; d=$(pick_destination "  输入要移除的那台的编号：" "  Number of the Mac to remove:") || exit 1
+  "$ENGINE" configure --remove-sender "$d" >/dev/null 2>&1 || fail "移除失败。" "Removing failed."
+  if yes_no "  同时卸载 $d 上的接收端吗？" "  Also uninstall the receiver on $d?"; then
+    if rssh "$d" "bash $REMOTE_DIR/install/typeless-bridge.sh configure --receiver off" >/dev/null 2>&1; then
+      ok "已卸载 $d 上的接收端" "Receiver on $d uninstalled"
+    else
+      bad "没能连上 ${d}，接收端还留在那边。" "Could not reach $d; its receiver is still there."
+    fi
+  fi
+  "$ENGINE" unpair "$d" >/dev/null 2>&1
+  ok "已移除 $d" "Removed $d"
+}
+
+upgrade_flow() {
+  preflight
+  build_apps
+  local d
+  for d in $(destinations); do
+    install_remote "$d" "$d"
+    grant_remote "$d" "$d"
+  done
+  title "在这台 Mac 上升级" "Upgrading this Mac"
+  busy "正在升级（几秒钟）" "Upgrading (a few seconds)" "$ENGINE" configure --apps-dir "$BUILT/apps" \
+    || { cat "$BUILT/step.log" >&2; fail "升级失败。" "Upgrade failed."; }
+  grant_local
+  finale "已升级到最新版本，可以继续使用了 🎙️" "Upgraded to the latest version, ready to use 🎙️"
+}
+
+uninstall_flow() {
+  local d dests; dests=$(destinations)
+  if [[ -n $dests ]] && yes_no "  同时卸载被控制的 Mac（${dests}）上的接收端吗？" "  Also uninstall the receivers on the Macs you control ($dests)?"; then
+    for d in $dests; do
+      if rssh "$d" "bash $REMOTE_DIR/install/typeless-bridge.sh configure --receiver off" >/dev/null 2>&1; then
+        ok "已卸载 $d 上的接收端" "Receiver on $d uninstalled"
+      else
+        bad "没能连上 $d" "Could not reach $d"
+      fi
+    done
+  fi
+  for d in $dests; do
+    "$ENGINE" configure --remove-sender "$d" >/dev/null 2>&1
+    "$ENGINE" unpair "$d" >/dev/null 2>&1
+  done
+  ok "已卸载" "Uninstalled"
+}
+
+main() {
+  remember_terminal
+  mkdir -p "$BUILT"
+  printf '\n\033[1mTypeless Remote Bridge\033[0m %s\n' "$(cat "$REPO/VERSION" 2>/dev/null)"
+  say "这个终端窗口就是安装向导，请按这里的提示操作。" "This Terminal window is the setup wizard: follow the prompts here."
+  local dests; dests=$(destinations)
+  if [[ -z $dests ]]; then add_flow; return; fi
+  title "已在控制：$dests" "Already controlling: $dests"
+  say "  a) 添加一台要控制的 Mac" "  a) add a Mac to control"
+  say "  r) 移除一台" "  r) remove one"
+  say "  u) 升级（包括被控制的 Mac）" "  u) upgrade (including the Macs you control)"
+  say "  x) 全部卸载" "  x) uninstall everything"
+  case $(ask "  选择（a/r/u/x）：" "  Choose (a/r/u/x):") in
+    a | A) add_flow ;; r | R) remove_flow ;; u | U) upgrade_flow ;; x | X) uninstall_flow ;; *) exit 0 ;;
+  esac
+}
+
+if [[ ${TB_SETUP_LIBRARY:-} != 1 ]]; then
+  exec 3<"$TTY" || { echo "setup needs a terminal" >&2; exit 1; }
+  main "$@"
+fi
