@@ -1,4 +1,4 @@
-# Typeless Remote Bridge
+# Screen Sharing Bridge for Typeless
 
 [English](README.en.md) · 中文
 
@@ -9,7 +9,7 @@
 只需要在**你说话的那台 Mac**（装了 Typeless 的那台）上打开"终端"，粘贴这一行，然后按提示操作：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/GordonWang1878/typeless-remote-bridge/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/GordonWang1878/typeless-screen-sharing-bridge/main/install.sh | bash
 ```
 
 安装向导会：

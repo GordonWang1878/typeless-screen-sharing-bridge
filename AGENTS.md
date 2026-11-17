@@ -1,4 +1,4 @@
-# Installing Typeless Remote Bridge for a user (instructions for coding agents)
+# Installing Screen Sharing Bridge for Typeless for a user (instructions for coding agents)
 
 Goal: the user dictates with Typeless on one Mac (the **sender**) and the text lands in the Mac
 shown in a Screen Sharing window (a **receiver**). Every Mac involved needs this installed.
@@ -9,7 +9,7 @@ Ask the user to run this in Terminal **on the Mac they talk to only**, and to an
 Each run adds one controlled Mac and installs the receiver there over SSH:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/GordonWang1878/typeless-remote-bridge/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/GordonWang1878/typeless-screen-sharing-bridge/main/install.sh | bash
 ```
 
 The wizard is interactive (pick a Mac, its password once, permission switches, final test). Running
@@ -17,7 +17,7 @@ it yourself only works if you can hand the user a real terminal.
 
 ## If you must drive it step by step
 
-Work from a checkout (`git clone https://github.com/GordonWang1878/typeless-remote-bridge`), as the
+Work from a checkout (`git clone https://github.com/GordonWang1878/typeless-screen-sharing-bridge`), as the
 logged-in user, no sudo. The engine is `install/typeless-bridge.sh`.
 
 1. **Receiver Mac**

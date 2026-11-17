@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # One-line installer:
-#   curl -fsSL https://raw.githubusercontent.com/GordonWang1878/typeless-remote-bridge/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/GordonWang1878/typeless-screen-sharing-bridge/main/install.sh | bash
 # Downloads the latest code into ~/.local/share/typeless-remote-bridge and starts the setup
 # wizard. Nothing is installed before the wizard asks. Run it again to upgrade or uninstall.
 set -euo pipefail
 
-TARBALL="${TB_TARBALL:-https://codeload.github.com/GordonWang1878/typeless-remote-bridge/tar.gz/refs/heads/main}"
+TARBALL="${TB_TARBALL:-https://codeload.github.com/GordonWang1878/typeless-screen-sharing-bridge/tar.gz/refs/heads/main}"
 DEST="$HOME/.local/share/typeless-remote-bridge"
 
-[[ $(uname -s) == Darwin ]] || { echo "Typeless Remote Bridge runs on macOS only." >&2; exit 1; }
+[[ $(uname -s) == Darwin ]] || { echo "Screen Sharing Bridge for Typeless runs on macOS only." >&2; exit 1; }
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/typeless-remote-bridge.XXXXXX")
 trap 'rm -rf "$work"' EXIT
-echo "Downloading Typeless Remote Bridge…"
+echo "Downloading Screen Sharing Bridge for Typeless…"
 if [[ -d $TARBALL ]]; then
   cp -R "$TARBALL/." "$work/src"   # local checkout (development and tests)
 else

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Typeless Remote Bridge setup wizard. Run it only on the Mac you talk to (the one with
+# Screen Sharing Bridge for Typeless setup wizard. Run it only on the Mac you talk to (the one with
 # Typeless). Each run adds one Mac you control with Screen Sharing: it connects to that Mac,
 # installs the receiver there over SSH, walks you through the permission switches (the remote
 # one through your Screen Sharing window), and ends with a live test. Run it again to add or
@@ -439,7 +439,7 @@ uninstall_flow() {
 main() {
   remember_terminal
   mkdir -p "$BUILT"
-  printf '\n\033[1mTypeless Remote Bridge\033[0m %s\n' "$(cat "$REPO/VERSION" 2>/dev/null)"
+  printf '\n\033[1mScreen Sharing Bridge for Typeless\033[0m %s\n' "$(cat "$REPO/VERSION" 2>/dev/null)"
   say "这个终端窗口就是安装向导，请按这里的提示操作。" "This Terminal window is the setup wizard: follow the prompts here."
   local dests; dests=$(destinations)
   if [[ -z $dests ]]; then add_flow; return; fi

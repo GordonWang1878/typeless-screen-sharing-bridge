@@ -1,4 +1,4 @@
-"""Typeless Remote Bridge sender (LaunchAgent org.local.typelessbridge.sender).
+"""Screen Sharing Bridge for Typeless: sender (LaunchAgent org.local.typelessbridge.sender).
 
 Starts the paste guard, keeps its heartbeat fresh, and delivers each new local Typeless
 dictation to the configured remote Mac whose Screen Sharing window is in front.

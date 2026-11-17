@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Typeless Remote Bridge installer. Runs on the Mac being set up, as the logged-in user. No sudo.
+# Screen Sharing Bridge for Typeless installer. Runs on the Mac being set up, as the logged-in user. No sudo.
 #
 #   typeless-bridge.sh install [--sender DESTS] [--receiver] [--apps-dir DIR]
 #   typeless-bridge.sh uninstall [--purge-state] [--keep-permissions]

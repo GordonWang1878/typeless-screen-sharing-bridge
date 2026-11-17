@@ -1,4 +1,4 @@
-// Typeless Remote Bridge receiver (LaunchAgent org.local.typelessbridge.receiver).
+// Screen Sharing Bridge for Typeless: receiver (LaunchAgent org.local.typelessbridge.receiver).
 //
 // Listens on a Unix socket only this user can open. Each connection carries one JSON line:
 //   {"op":"health"}                                  -> {"status":"ready"|"needs-accessibility"}

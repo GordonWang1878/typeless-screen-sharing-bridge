@@ -1,4 +1,4 @@
-# Typeless Remote Bridge
+# Screen Sharing Bridge for Typeless
 
 English · [中文](README.md)
 
@@ -10,7 +10,7 @@ text lands in a text field on **the remote Mac**, exactly once and without a str
 Only on **the Mac you talk to** (the one with Typeless): open Terminal, paste this line and follow the prompts:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/GordonWang1878/typeless-remote-bridge/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/GordonWang1878/typeless-screen-sharing-bridge/main/install.sh | bash
 ```
 
 The setup wizard:

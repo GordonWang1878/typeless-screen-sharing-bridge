@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.1 — 2026-11-17
+
+- Renamed to **Screen Sharing Bridge for Typeless** (repository
+  `typeless-screen-sharing-bridge`): it works with Apple's Screen Sharing only, and is not an
+  official Typeless product.
+
 ## 0.9.0 — 2026-11-17
 
 First release (terminal setup wizard; private preview before 1.0).

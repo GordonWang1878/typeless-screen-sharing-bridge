@@ -1,4 +1,4 @@
-// Typeless Remote Bridge paste guard. Started by the sender service:
+// Screen Sharing Bridge for Typeless: paste guard. Started by the sender service:
 //   TypelessBridgeGuard <heartbeat-file> <destinations: ssh aliases, e.g. studio,office> <identities.json> <delivered-file>
 // Suppresses only Typeless' own Command-V, only while the focused Screen Sharing window is
 // connected to one of the configured destinations (matched by Mac name, see focus probe) and
