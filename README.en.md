@@ -54,6 +54,9 @@ press keys and read window information.
 **One Mac is not recognised?** The bridge recognises a Mac by the name of its Screen Sharing
 connection, which is that Mac's name. If you renamed a saved connection, rename it back.
 
+**Macs on another network?** If the Macs can reach each other (for example with Tailscale), choose
+"enter its address" in the wizard and type the other Mac's address. Not specifically tested yet.
+
 **How do I uninstall?** Run the install line again and choose uninstall.
 
 ## More

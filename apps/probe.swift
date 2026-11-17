@@ -40,8 +40,16 @@ func loadIdentities(_ data: Data?) -> [String: Set<String>] {
 }
 // Exactly one destination must claim the host; none or several means "not ours".
 func destination(host: String, identities: [String: Set<String>]) -> String? {
-    let matches = identities.filter { $0.value.contains(host) }.map(\.key)
-    return matches.count == 1 ? matches[0] : nil
+    func unique(_ name: String) -> String?? {   // nil: no match; .some(nil): ambiguous
+        let matches = identities.filter { $0.value.contains(name) }.map(\.key)
+        return matches.isEmpty ? nil : .some(matches.count == 1 ? matches[0] : nil)
+    }
+    if let exact = unique(host) { return exact }
+    // A DNS name such as core.tailnet.ts.net (Tailscale and the like): try its first label.
+    // Never for addresses.
+    let isAddress = host.contains(":") || host.allSatisfy { $0.isNumber || $0 == "." }
+    guard !isAddress, let dot = host.firstIndex(of: "."), dot != host.startIndex else { return nil }
+    return unique(String(host[..<dot])) ?? nil
 }
 
 // The setup wizard asks this to show a live "allowed" check. Must be launched with `open`
@@ -63,7 +71,12 @@ if CommandLine.arguments.contains("--self-test") {
     precondition(connectionFile(URL(fileURLWithPath: screenSharingFolder + "Hub (x).vncloc").absoluteString) != nil)
     precondition(connectionFile(URL(fileURLWithPath: screenSharingFolder + "sub/Hub.vncloc").absoluteString) == nil)
     precondition(connectionFile("https://example.com/Hub.vncloc") == nil)
-    print("10 focus-policy cases passed")
+    precondition(destination(host: "hub.tail1234.ts.net", identities: ids) == "hub")
+    precondition(destination(host: "office.tail1234.ts.net", identities: ids) == nil)
+    precondition(destination(host: "192.0.2.99", identities: ids) == nil)
+    precondition(destination(host: "hub.x", identities: ["hub": ["hub"], "core": ["hub"]]) == nil)
+    precondition(destination(host: "cafe.tail1234.ts.net", identities: ["cafe": ["cafe"]]) == "cafe")
+    print("15 focus-policy cases passed")
     exit(0)
 }
 guard CommandLine.arguments.count == 2 else { print("usage"); exit(0) }

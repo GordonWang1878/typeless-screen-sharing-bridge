@@ -43,8 +43,16 @@ func loadIdentities(_ data: Data?) -> [String: Set<String>] {
 }
 // Exactly one destination must claim the host; none or several means "not ours".
 func destination(host: String, identities: [String: Set<String>]) -> String? {
-    let matches = identities.filter { $0.value.contains(host) }.map(\.key)
-    return matches.count == 1 ? matches[0] : nil
+    func unique(_ name: String) -> String?? {   // nil: no match; .some(nil): ambiguous
+        let matches = identities.filter { $0.value.contains(name) }.map(\.key)
+        return matches.isEmpty ? nil : .some(matches.count == 1 ? matches[0] : nil)
+    }
+    if let exact = unique(host) { return exact }
+    // A DNS name such as core.tailnet.ts.net (Tailscale and the like): try its first label.
+    // Never for addresses.
+    let isAddress = host.contains(":") || host.allSatisfy { $0.isNumber || $0 == "." }
+    guard !isAddress, let dot = host.firstIndex(of: "."), dot != host.startIndex else { return nil }
+    return unique(String(host[..<dot])) ?? nil
 }
 
 
@@ -145,7 +153,8 @@ if CommandLine.arguments.contains("--self-test") {
     let english = PopupItem(role: "AXButton", label: "Copied", isTitle: false)
     precondition(closeButtonIndex([title, close, text, english]) == 1)
     precondition(popupTitles.contains("Copy last transcript") && popupTitles.contains("复制最后的转录"))
-    print("20 guard checks passed")
+    precondition(destination(host: "core.tail1234.ts.net", identities: ids) == "core")
+    print("21 guard checks passed")
     exit(0)
 }
 guard CommandLine.arguments.count == 5, let allowed = allowedDestinations(CommandLine.arguments[2]),

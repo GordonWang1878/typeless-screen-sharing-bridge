@@ -43,6 +43,8 @@ curl -fsSL https://raw.githubusercontent.com/GordonWang1878/typeless-screen-shar
 
 **某台 Mac 认不出来？** 桥接按屏幕共享连接的名字（即对方 Mac 的名字）来识别。如果你把保存的连接改成了别的名字，就会认不出来；改回对方 Mac 的名字即可。
 
+**不在同一个局域网的 Mac 能用吗？** 只要两台 Mac 能互相连上（比如用 Tailscale 这类组网工具），在向导里选"手动输入地址"，填对方的地址即可。这类场景还没有专门测试过。
+
 **怎么卸载？** 再运行安装命令，选"卸载"。
 
 ## 更多

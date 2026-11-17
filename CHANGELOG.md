@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.2 — 2026-11-17
+
+- A Screen Sharing connection made by DNS name (for example a Tailscale name such as
+  `studio.tail1234.ts.net`) is recognised by its first label. For Macs on another network,
+  pick "enter its address" in the wizard. Not yet tested on such a setup.
+
 ## 0.9.1 — 2026-11-17
 
 - Renamed to **Screen Sharing Bridge for Typeless** (repository
