@@ -149,6 +149,14 @@ class InstallerTest(unittest.TestCase):
         self.assertFalse((self.root / "manifest").exists())
         self.assertTrue(tcc.exists(), "removing the last role is a real uninstall")
 
+    def test_configure_checks_before_touching_the_working_install(self):
+        self.assertEqual(self.run_script("install", "--receiver", "--apps-dir", str(self.apps)).returncode, 0)
+        before = (self.root / "manifest").read_text()
+        r = self.run_script("configure", "--add-sender", "no-such-mac-xyz", "--apps-dir", str(self.apps))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual((self.root / "manifest").read_text(), before)
+        self.assertTrue((self.agents / "org.local.typelessbridge.receiver.plist").exists())
+
     def test_uninstall_keep_permissions(self):
         tcc = self.tcc_stub()
         self.run_script("install", "--receiver", "--apps-dir", str(self.apps))
@@ -286,6 +294,27 @@ class PairTest(unittest.TestCase):
         self.assertEqual(self.config.read_text(), "Host other\n  HostName 192.0.2.9\n")
         self.assertNotIn("typeless-bridge-studio", self.known.read_text())
         self.assertNotEqual(self.run_script("unpair", "studio").returncode, 0)
+
+    def test_damaged_block_leaves_the_config_alone(self):
+        self.config.parent.mkdir()
+        damaged = "# >>> typeless-bridge studio\nHost studio\n  HostName x\nHost mine\n  HostName 192.0.2.7\n"
+        self.config.write_text(damaged)
+        r = self.run_script("unpair", "studio")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("no end marker", r.stderr)
+        self.assertEqual(self.config.read_text(), damaged)
+
+    def test_symlinked_config_stays_a_symlink(self):
+        dotfiles = self.home / "dotfiles"; dotfiles.mkdir()
+        real = dotfiles / "ssh_config"; real.write_text("Host other\n  HostName 192.0.2.9\n")
+        self.config.parent.mkdir(); self.config.symlink_to(real)
+        r = self.run_script("pair", "studio", "alice@studio.local", "--fingerprint", self.fingerprint)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.config.is_symlink())
+        self.assertIn("Host studio", real.read_text())
+        self.assertEqual(self.run_script("unpair", "studio").returncode, 0)
+        self.assertTrue(self.config.is_symlink())
+        self.assertEqual(real.read_text(), "Host other\n  HostName 192.0.2.9\n")
 
     def test_rejects_bad_names_and_targets(self):
         for args in (("pair", "Studio", "alice@h"), ("pair", "studio", "nouser"), ("pair", "studio", "a@b;rm"),

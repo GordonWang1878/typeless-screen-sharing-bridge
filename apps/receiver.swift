@@ -213,6 +213,32 @@ if CommandLine.arguments.contains("--check-trust") {
     print(AXIsProcessTrusted() ? "trusted" : "untrusted")
     exit(0)
 }
+// The setup window shows this on the controlled Mac (seen through Screen Sharing) to point at
+// the switch to turn on. A small floating panel; it closes when the setup moves on or after 10 min.
+if let index = CommandLine.arguments.firstIndex(of: "--hint"), index + 1 < CommandLine.arguments.count {
+    let text = CommandLine.arguments[index + 1]
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)
+    let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 96),
+                        styleMask: [.titled, .nonactivatingPanel, .utilityWindow], backing: .buffered, defer: false)
+    panel.title = "Screen Sharing Bridge for Typeless"
+    panel.level = .floating
+    panel.isFloatingPanel = true
+    panel.hidesOnDeactivate = false
+    let icon = NSImageView(frame: NSRect(x: 16, y: 20, width: 56, height: 56))
+    icon.image = NSApp.applicationIconImage
+    let label = NSTextField(wrappingLabelWithString: "👉 " + text)
+    label.frame = NSRect(x: 84, y: 16, width: 260, height: 64)
+    label.font = .systemFont(ofSize: 14, weight: .semibold)
+    panel.contentView?.addSubview(icon)
+    panel.contentView?.addSubview(label)
+    if let screen = NSScreen.main?.visibleFrame {
+        panel.setFrameTopLeftPoint(NSPoint(x: screen.maxX - 380, y: screen.maxY - 20))
+    }
+    panel.orderFrontRegardless()
+    DispatchQueue.main.asyncAfter(deadline: .now() + 600) { exit(0) }
+    app.run()
+}
 if CommandLine.arguments.contains("--self-test") {
     precondition(parseRequest(#"{"op":"health"}"#.data(using: .utf8)!) == .health)
     precondition(parseRequest(#"{"op":"paste-current","id":"a","text":"你好"}"#.data(using: .utf8)!) == .paste(id: "a", text: "你好"))

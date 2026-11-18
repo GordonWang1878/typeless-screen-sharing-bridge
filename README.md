@@ -12,7 +12,7 @@
 curl -fsSL https://raw.githubusercontent.com/GordonWang1878/typeless-screen-sharing-bridge/main/install.sh | bash
 ```
 
-安装向导会：
+一个安装窗口会打开（终端可以关掉了），它会：
 
 1. 列出局域网里开了屏幕共享的 Mac，你选一台要控制的；
 2. 输入一次那台 Mac 的开机密码，向导就会自动把接收端装过去（那台 Mac 不需要装任何东西）；
@@ -37,7 +37,7 @@ curl -fsSL https://raw.githubusercontent.com/GordonWang1878/typeless-screen-shar
 
 ## 常见问题
 
-**安全吗？** 文字只经过你自己 Mac 之间的 SSH 加密连接，不经过任何第三方服务器，也不会写进日志。配对使用专用密钥，并且要求你核对配对码，防止连错机器。
+**安全吗？** 文字只经过你自己 Mac 之间的 SSH 加密连接，不经过任何第三方服务器，也不会写进日志。连接使用专用密钥；向导会核对对方 Mac 的名字，并记住它的身份，之后换了机器就连不上，防止连错。
 
 **为什么要我手动授权？** macOS 规定，模拟按键和读取窗口信息的权限只能由用户本人授予，任何程序都不能代劳。
 

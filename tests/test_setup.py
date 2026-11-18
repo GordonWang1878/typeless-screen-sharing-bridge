@@ -30,7 +30,7 @@ exit 0
 if [[ $1 == -B ]]; then
   echo "Timestamp     A/R    Flags  if Domain               Service Type         Instance Name"
   echo "10:00:00.000  Add        3  14 local.               _rfb._tcp.           Core"
-  echo "10:00:00.000  Add        3  14 local.               _rfb._tcp.           Studio Mac"
+  echo " 9:00:00.000  Add        3  14 local.               _rfb._tcp.           Studio Mac"   # before 10:00: padded
 else
   echo "10:00:01.000  $2._rfb._tcp.local. can be reached at studio.local.:5900 (interface 14)"
 fi
@@ -43,11 +43,12 @@ args=("$@"); i=0
 while [[ ${args[$i]} == -* ]]; do [[ ${args[$i]} == -o ]] && i=$((i + 2)) || i=$((i + 1)); done
 host=${args[$i]}; cmd="${args[*]:$((i + 1))}"
 echo "ssh $host $cmd" >> "$STUB/calls"
+[[ -n ${UNREACHABLE:-} ]] && exit 255
 case $cmd in
   true) [[ -e "$STUB/paired" ]] ;;
   *"scutil --get ComputerName"*) echo "${REMOTE_NAME:-Studio Mac}" ;;
   *"tar -C"*) cat > /dev/null ;;
-  *--check-trust*) cat "$STUB/trust_remote" ;;
+  *--check-trust*) grep -qx trusted "$STUB/trust_remote" || echo TypelessBridgeReceiver ;;
   *"nc -U"*) cat > /dev/null; echo '{"status":"ready"}' ;;
   *Privacy_Accessibility*) (sleep "${GRANT_DELAY:-2}"; echo trusted > "$STUB/trust_remote") & ;;
   *) : ;;
@@ -59,14 +60,19 @@ root="$HOME/Library/Application Support/TypelessRemoteBridge"; m="$root/manifest
 dests=$(sed -n 's/^options .*sender=\([^ ]*\).*/\1/p' "$m" 2>/dev/null); [[ $dests == none ]] && dests=""
 rec=$(sed -n 's/^options .*receiver=\([^ ]*\).*/\1/p' "$m" 2>/dev/null); rec=${rec:-0}
 case $1 in
-  pair) touch "$STUB/paired" ;;
+  pair) [[ -n ${FAIL_PAIR:-} ]] && exit 1
+        echo "askpass=${SSH_ASKPASS_REQUIRE:-}:${TB_PASSWORD:-}" >> "$STUB/calls"; touch "$STUB/paired" ;;
   configure) shift
     while (($#)); do case $1 in
       --add-sender) dests="${dests:+$dests,}$2"; shift 2 ;;
       --remove-sender) dests=$(printf '%s' "$dests" | tr ',' '\n' | grep -vx "$2" | paste -sd, -); shift 2 ;;
       *) shift 2 ;; esac; done
     mkdir -p "$root"
-    if [[ -n $dests || $rec == 1 ]]; then echo "options sender=${dests:-none} receiver=$rec" > "$m"; else rm -f "$m"; fi ;;
+    if [[ -n $dests || $rec == 1 ]]; then echo "options sender=${dests:-none} receiver=$rec" > "$m"; else rm -f "$m"; fi
+    rm -rf "$root/Apps"; mkdir -p "$root/Apps"
+    [[ -n $dests ]] && mkdir -p "$root/Apps/TypelessBridgeGuard.app" "$root/Apps/TypelessBridgeProbe.app"
+    [[ $rec == 1 ]] && mkdir -p "$root/Apps/TypelessBridgeReceiver.app"
+    true ;;
 esac
 exit 0
 """,
@@ -77,13 +83,17 @@ echo "launchctl $*" >> "$STUB/calls"
 if [[ $* == *typelessbridge.sender* ]]; then
   log="$HOME/Library/Logs/TypelessRemoteBridge/sender.log"; mkdir -p "$(dirname "$log")"
   echo "PILOT_READY" >> "$log"
-  (sleep 2; printf 'TARGET studio-mac\nRESULT paste-sent-unconfirmed\n' >> "$log") &
+  # The user "speaks" every second for a while, so a slow machine cannot miss the only sentence.
+  (for _ in $(seq 1 30); do sleep 1; [ -d "$(dirname "$log")" ] || exit 0
+     printf 'TARGET studio-mac\nRESULT paste-sent-unconfirmed\n' >> "$log"; done) >/dev/null 2>&1 &
 fi
 """,
 }
 
 
-class SetupWizard(unittest.TestCase):
+class StubbedMac(unittest.TestCase):
+    """Fake HOME and stubbed system commands; no tests of its own."""
+
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="tb-setup-"))
         self.home = self.tmp / "home"
@@ -117,6 +127,8 @@ class SetupWizard(unittest.TestCase):
         root = self.home / "Library/Application Support/TypelessRemoteBridge"; root.mkdir(parents=True)
         (root / "manifest").write_text(f"options sender={dests} receiver=0\n")
 
+
+class SetupWizard(StubbedMac):
     def test_add_a_mac_end_to_end(self):
         r = self.run_setup("1\n")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -137,7 +149,7 @@ class SetupWizard(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("Switch to the Screen Sharing window of Studio Mac", r.stdout)
         calls = self.calls()
-        self.assertTrue(any("tccutil reset Accessibility org.local.typelessbridge.receiver" in c
+        self.assertTrue(any("tccutil reset Accessibility" in c and "TypelessBridgeReceiver.app" in c
                             for c in calls if c.startswith("ssh studio-mac")))
         self.assertTrue(any("Privacy_Accessibility" in c for c in calls if c.startswith("ssh studio-mac")))
 
@@ -161,7 +173,7 @@ class SetupWizard(unittest.TestCase):
     def test_hint_when_waiting_long(self):
         (self.tmp / "trust_remote").write_text("untrusted\n")
         r = self.run_setup("1\n", GRANT_DELAY="16")
-        self.assertIn("If you cannot find it", r.stdout)
+        self.assertIn("If you cannot find them", r.stdout)
 
     def test_wrong_machine_stops_before_installing(self):
         r = self.run_setup("1\n", REMOTE_NAME="Somebody Else")
@@ -222,6 +234,103 @@ class SetupWizard(unittest.TestCase):
                               ' same_name Hub hub && echo same', str(SETUP)], capture_output=True, text=True).stdout
         self.assertEqual(out.split(), ["alice-s-mac-studio", "same"])
 
+
+
+class StepMode(StubbedMac):
+    """setup --step …: the non-interactive steps the setup window calls."""
+
+    def step(self, *args, **env):
+        e = dict(self.env, **env)
+        return subprocess.run(["bash", str(SETUP), "--step", *args], env=e, capture_output=True, text=True, timeout=60)
+
+    def test_preflight(self):
+        out = self.step("preflight").stdout
+        for line in ("typeless=1", "tools=1", "python=1", "version="):
+            self.assertIn(line, out)
+
+    def test_discover_marks_added(self):
+        self.installed_with("studio-mac")
+        self.assertEqual(self.step("discover").stdout, "Studio Mac\tstudio.local\tadded\n")
+
+    def test_connect_passes_password_only_through_askpass(self):
+        r = self.step("connect", "Studio Mac", "studio.local", "alice", TB_PASSWORD="s3cret")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("dest=studio-mac", r.stdout)
+        self.assertNotIn("s3cret", r.stdout + r.stderr)
+        self.assertIn("askpass=force:s3cret", self.calls())
+
+    def test_connect_login_failure(self):
+        r = self.step("connect", "Studio Mac", "studio.local", "alice", FAIL_PAIR="1")
+        self.assertEqual((r.returncode, r.stdout.strip()), (2, "error=login"))
+
+    def test_connect_wrong_machine(self):
+        r = self.step("connect", "Studio Mac", "studio.local", "alice", "check-name", REMOTE_NAME="Other Mac")
+        self.assertEqual(r.returncode, 3)
+        self.assertIn("remote=Other Mac", r.stdout)
+        self.assertIn("engine unpair studio-mac", self.calls())
+
+    def test_manual_address_skips_the_name_check(self):
+        r = self.step("connect", "studio", "studio.local", "alice", REMOTE_NAME="Studio Mac")
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("dest=studio", r.stdout)
+
+    def test_name_check_ignores_apostrophes_and_bonjour_suffix(self):
+        r = self.step("connect", "Alice’s Mac (2)", "studio.local", "alice", "check-name", REMOTE_NAME="Alice's Mac")
+        self.assertEqual(r.returncode, 0, r.stdout)
+
+    def test_chinese_and_address_names_get_distinct_destinations(self):
+        r = self.step("connect", "我的电脑", "wodediannao.local", "alice")
+        self.assertIn("dest=wodediannao", r.stdout)
+        r = self.step("connect", "我的电脑", "192.0.2.20", "alice")
+        self.assertIn("dest=mac-192-0-2-20", r.stdout)
+
+    def test_already_added_and_bad_address(self):
+        self.installed_with("studio-mac")
+        self.assertEqual(self.step("connect", "Studio Mac", "studio.local", "alice").returncode, 5)
+        self.assertEqual(self.step("connect", "x", "-oProxyCommand=evil", "alice").returncode, 6)
+        self.assertEqual(self.step("ssh-open", "-oProxyCommand=evil").returncode, 3)
+
+    def test_remove_reports_an_unreachable_remote(self):
+        self.installed_with("studio-mac")
+        r = self.step("remove", "studio-mac", "--remote", UNREACHABLE="1")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("unreachable=studio-mac", r.stdout)
+
+    def test_typed_name_that_does_not_resolve(self):
+        self.assertEqual(self.step("ssh-open", "no-such-mac-xyz.invalid").returncode, 3)
+        # a discovered host is never rejected for not resolving (ssh-keyscan decides)
+        self.assertNotEqual(self.step("ssh-open", "no-such-mac-xyz.invalid", "discovered").returncode, 3)
+
+    def test_own_alias_pointing_elsewhere_is_refused(self):
+        ssh_dir = self.home / ".ssh"; ssh_dir.mkdir()
+        (ssh_dir / "config").write_text("Host studio\n  HostName 192.0.2.99\n")
+        r = self.step("connect", "studio", "studio.local", "alice", REMOTE_NAME="Somewhere Else")
+        self.assertEqual(r.returncode, 7, r.stdout)
+        self.assertIn("error=alias-conflict", r.stdout)
+
+    def test_remote_prepare_lists_what_to_switch_on(self):
+        (self.tmp / "trust_remote").write_text("untrusted\n")
+        r = self.step("remote-prepare", "studio-mac")
+        self.assertIn("missing=TypelessBridgeReceiver", r.stdout)
+
+    def test_test_result(self):
+        log = self.home / "Library/Logs/TypelessRemoteBridge/sender.log"; log.parent.mkdir(parents=True)
+        log.write_text("PILOT_READY\n")
+        self.assertEqual(self.step("test-result", "1").stdout.strip(), "none")
+        log.write_text("PILOT_READY\nTARGET local\nRESULT local\n")
+        self.assertEqual(self.step("test-result", "1").stdout.strip(), "local")
+        log.write_text("PILOT_READY\nTARGET local\nRESULT local\nRESULT paste-sent-unconfirmed\n")
+        self.assertEqual(self.step("test-result", "3").stdout.strip(), "delivered")
+
+    def test_local_missing_lists_untrusted_apps(self):
+        (self.tmp / "trust_local").write_text("untrusted\n")
+        apps = self.home / "Library/Application Support/TypelessRemoteBridge/Apps"
+        for name in ("TypelessBridgeGuard", "TypelessBridgeProbe"):
+            (apps / f"{name}.app").mkdir(parents=True)
+        self.assertEqual(self.step("local-missing").stdout.split(), ["TypelessBridgeGuard", "TypelessBridgeProbe"])
+
+    def test_unknown_step(self):
+        self.assertEqual(self.step("nope").returncode, 64)
 
 class Bootstrap(unittest.TestCase):
     def test_install_sh_fetches_code_and_replaces_an_old_copy(self):

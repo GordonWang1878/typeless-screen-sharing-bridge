@@ -109,6 +109,7 @@ cmd_install() {
       || die "Typeless database not found; install and sign in to Typeless first"
     /usr/bin/python3 -c 'import sqlite3' 2>/dev/null || die "/usr/bin/python3 unavailable (xcode-select --install)"
     for d in "${list[@]}"; do
+      [[ ",${SSH_ALREADY_OK:-}," == *",$d,"* ]] && continue   # set by configure for existing ones
       ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=5 "$d" true </dev/null \
         || die "ssh $d failed; run: $0 pair $d USER@HOST"
     done
@@ -169,8 +170,16 @@ cmd_install() {
   echo "options sender=${dests:-none} receiver=$receiver" >> "$manifest"
   mv "$manifest" "$ROOT/manifest"
 
-  ((receiver)) && "$LAUNCHCTL" bootstrap "$DOMAIN" "$AGENTS/$RECEIVER_LABEL.plist"
-  [[ -n $dests ]] && "$LAUNCHCTL" bootstrap "$DOMAIN" "$AGENTS/$SENDER_LABEL.plist"
+  # launchd can refuse a bootstrap right after a bootout of the same label: retry once. Kept inline
+  # (not in a function) so a final failure still reaches the ERR trap with its recovery advice.
+  if ((receiver)); then
+    "$LAUNCHCTL" bootstrap "$DOMAIN" "$AGENTS/$RECEIVER_LABEL.plist" 2>/dev/null \
+      || { sleep 1; "$LAUNCHCTL" bootstrap "$DOMAIN" "$AGENTS/$RECEIVER_LABEL.plist"; }
+  fi
+  if [[ -n $dests ]]; then
+    "$LAUNCHCTL" bootstrap "$DOMAIN" "$AGENTS/$SENDER_LABEL.plist" 2>/dev/null \
+      || { sleep 1; "$LAUNCHCTL" bootstrap "$DOMAIN" "$AGENTS/$SENDER_LABEL.plist"; }
+  fi
 
   trap - ERR
   say "installed. Grant Privacy & Security -> Device Control to:"
@@ -233,13 +242,50 @@ cmd_configure() {
     [[ $d == "$remove" || $d == "$add" ]] || list="${list:+$list,}$d"
   done
   [[ -n $add ]] && list="${list:+$list,}$add"
+  local old_rec=$rec
   [[ $receiver == on ]] && rec=1
   [[ $receiver == off ]] && rec=0
   if [[ -z $list && $rec == 0 ]]; then
-    [[ -e "$ROOT/manifest" ]] && cmd_uninstall
+    [[ -e "$ROOT/manifest" ]] && cmd_uninstall --purge-state
     return 0
   fi
+  # Check everything that could fail before touching the working install, so a Mac that is asleep
+  # or a bad build never leaves this one with nothing. Only a newly added Mac needs an ssh check.
+  if [[ -n $list ]]; then
+    [[ -e "$HOME/Library/Application Support/Typeless/typeless.db" ]] \
+      || die "Typeless database not found; install and sign in to Typeless first"
+    if [[ -n $add ]]; then
+      ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=5 "$add" true </dev/null \
+        || die "ssh $add failed; run: $0 pair $add USER@HOST"
+    fi
+  fi
+  if [[ -n $apps_dir ]]; then
+    local need=()
+    [[ -n $list ]] && need+=("${SENDER_APPS[@]}")
+    ((rec)) && need+=("${RECEIVER_APPS[@]}")
+    for d in "${need[@]}"; do
+      codesign --verify --strict "$apps_dir/$d.app" 2>/dev/null || die "missing or unsigned app: $apps_dir/$d.app"
+    done
+  fi
+  # A role that goes away takes its Device Control entries with it (while its apps still exist).
+  local gone=()
+  [[ $old_rec == 1 && $rec == 0 ]] && gone+=("${RECEIVER_APPS[@]}")
+  [[ -n $dests && -z $list ]] && gone+=("${SENDER_APPS[@]}")
+  if ((${#gone[@]})); then
+    # A running helper would put its entry right back: stop the agents and helpers first.
+    local kind value
+    while read -r kind value; do
+      [[ $kind == agent ]] && { loaded "$value" && "$LAUNCHCTL" bootout "$DOMAIN/$value" || true; }
+    done < "$ROOT/manifest"
+    pkill -f "$APPS/" 2>/dev/null || true
+    for d in 1 2 3 4 5 6 7 8 9 10; do pgrep -f "$APPS/" >/dev/null 2>&1 || break; sleep 0.5; done
+  fi
+  for d in ${gone[@]+"${gone[@]}"}; do
+    local id; id=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APPS/$d.app/Contents/Info.plist" 2>/dev/null) \
+      && "${TB_TCCUTIL:-tccutil}" reset Accessibility "$id" >/dev/null 2>&1
+  done
   [[ -e "$ROOT/manifest" ]] && cmd_uninstall --keep-permissions >/dev/null
+  SSH_ALREADY_OK=$(printf '%s' "$list" | tr ',' '\n' | grep -vx -- "$add" | paste -sd, - || true)
   local args=()
   [[ -n $list ]] && args+=(--sender "$list")
   ((rec)) && args+=(--receiver)
@@ -258,9 +304,15 @@ block_end() { echo "# <<< typeless-bridge $1"; }
 remove_block() {  # remove_block <name> <file>
   [[ -e $2 ]] || return 0
   local begin end; begin=$(block_begin "$1"); end=$(block_end "$1")
-  # Write back into the same file so its permissions (600) are kept.
-  local kept; kept=$(awk -v b="$begin" -v e="$end" '$0==b{skip=1; next} $0==e{skip=0; next} !skip' "$2")
-  if [[ -n $kept ]]; then printf '%s\n' "$kept" > "$2"; else : > "$2"; fi
+  grep -qxF "$begin" "$2" || return 0
+  # A block whose end marker was edited away would swallow the rest of the file: leave it alone.
+  grep -qxF "$end" "$2" || die "the typeless-bridge block for $1 in $2 has no end marker; fix it by hand"
+  # Write to the real file, so a symlinked config (dotfiles) stays a symlink.
+  local real=$2 link
+  while [[ -L $real ]]; do link=$(readlink "$real"); [[ $link == /* ]] && real=$link || real=$(dirname "$real")/$link; done
+  local tmp; tmp=$(mktemp "$real.XXXXXX")
+  awk -v b="$begin" -v e="$end" '$0==b{skip=1; next} $0==e{skip=0; next} !skip' "$real" > "$tmp" \
+    && chmod 600 "$tmp" && mv "$tmp" "$real" || { rm -f "$tmp"; die "could not update $2"; }
 }
 
 remote_check() {  # remote_check <name>: passwordless login and receiver health
@@ -285,6 +337,9 @@ cmd_pair() {
     esac
   done
   valid_name "$name" || die "NAME must be lowercase letters, digits and -: '$name'"
+  if grep -qxF "$(block_begin "$name")" "$HOME/.ssh/config" 2>/dev/null && ! grep -qxF "$(block_end "$name")" "$HOME/.ssh/config"; then
+    die "the typeless-bridge block for $name in ~/.ssh/config has no end marker; fix it by hand"
+  fi
   [[ $target =~ ^([A-Za-z0-9._-]+)@([A-Za-z0-9.:-]+)$ ]] || die "give the receiver as USER@HOST, e.g. alice@studio.local"
   local user=${BASH_REMATCH[1]} host=${BASH_REMATCH[2]}
   mkdir -p "$SSH_DIR"; chmod 700 "$SSH_DIR"

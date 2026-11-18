@@ -13,7 +13,7 @@ Only on **the Mac you talk to** (the one with Typeless): open Terminal, paste th
 curl -fsSL https://raw.githubusercontent.com/GordonWang1878/typeless-screen-sharing-bridge/main/install.sh | bash
 ```
 
-The setup wizard:
+A setup window opens (you can close Terminal) and:
 
 1. lists the Macs with Screen Sharing on your network; you pick the one to control;
 2. asks for that Mac's login password once and installs the receiver there for you (nothing to
@@ -45,8 +45,8 @@ You can also let your coding agent (Claude Code, Codex, …) do it: give it [AGE
 ## FAQ
 
 **Is it safe?** Text only travels over encrypted SSH between your own Macs, never through a third
-party, and is never logged. Pairing uses a dedicated key and asks you to compare a pairing code, so
-you cannot pair with the wrong machine.
+party, and is never logged. The connection uses a dedicated key; the wizard checks the other Mac's
+name and remembers its identity, so a different machine is refused later.
 
 **Why do I have to grant permission by hand?** macOS only lets you, not a program, allow apps to
 press keys and read window information.

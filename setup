@@ -19,6 +19,7 @@ ROOT="$HOME/Library/Application Support/TypelessRemoteBridge"
 APPS="$ROOT/Apps"
 LOGS="$HOME/Library/Logs/TypelessRemoteBridge"
 BUILT="$HOME/.local/share/typeless-remote-bridge-build"
+export TB_MODULE_CACHE="${TB_MODULE_CACHE:-$BUILT/modcache}"   # Swift's module cache, kept between builds
 REMOTE_DIR='.local/share/typeless-remote-bridge-receiver'   # relative to the remote home; not the wizard's own folder
 PANE_PERMISSION="x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
 RECEIVER_ID=org.local.typelessbridge.receiver
@@ -57,12 +58,23 @@ slug() {  # "Alice's Studio" -> alice-s-studio (a valid destination name)
     | sed -e 's/-*$//'
 }
 parse_browse() {  # dns-sd -B output -> one instance name per line
-  awk '$2 == "Add" { $1 = $2 = $3 = $4 = $5 = $6 = ""; sub(/^ +/, ""); print }' | awk '!seen[$0]++'
+  # Before 10:00 the timestamp is space-padded (" 9:41:00.000"), so strip leading blanks first.
+  awk '$2 == "Add" { sub(/^ +/, ""); sub(/^([^ ]+ +){6}/, ""); print }' | awk '!seen[$0]++'
 }
 parse_resolve() {  # dns-sd -L output -> host name without trailing dot and port
   sed -n 's/.*can be reached at \([^ :]*\)\.:[0-9]*.*/\1/p' | head -1
 }
-same_name() { [[ $(printf '%s' "$1" | tr 'A-Z' 'a-z') == "$(printf '%s' "$2" | tr 'A-Z' 'a-z')" ]]; }
+plain_name() {  # "Alice’s Mac (2)" -> "alicesmac": case, punctuation and Bonjour's " (n)" ignored
+  printf '%s' "$1" | sed -e 's/ ([0-9]*)$//' -e "s/’//g" -e "s/‘//g" | tr 'A-Z' 'a-z' | LC_ALL=C tr -cd 'a-z0-9\200-\377'
+}
+same_name() { [[ $(plain_name "$1") == "$(plain_name "$2")" ]]; }
+is_address() { [[ $1 == *:* || $1 =~ ^[0-9.]+$ ]]; }
+dest_name() {  # dest_name <display name> <host>: a valid, readable destination name
+  local name; name=$(slug "$1")
+  if [[ -z $name || $name =~ ^[0-9-]+$ ]] && ! is_address "$2"; then name=$(slug "${2%%.*}"); fi
+  if [[ -z $name || $name =~ ^[0-9-]+$ || $name == local ]]; then name=$(slug "mac-$2"); fi
+  printf '%s' "$name"
+}
 
 # ---------- state ----------
 option() { sed -n "s/^options .*$1=\([^ ]*\).*/\1/p" "$ROOT/manifest" 2>/dev/null; }
@@ -87,10 +99,11 @@ sender_ready() { tail -n +"$((SENDER_MARK + 1))" "$LOGS/sender.log" 2>/dev/null 
 # ---------- remote ----------
 rssh() { ssh -T -o BatchMode=yes -o ConnectTimeout=5 "$1" "$2" </dev/null; }
 RAPP='$HOME/Library/Application Support/TypelessRemoteBridge/Apps/TypelessBridgeReceiver.app'
-remote_trusted() {
-  rssh "$1" "o=\$(mktemp); open -n -g --stdout \"\$o\" \"$RAPP\" --args --check-trust; for i in 1 2 3 4 5 6 7 8 9 10; do [ -s \"\$o\" ] && break; sleep 0.3; done; cat \"\$o\"; rm -f \"\$o\"" 2>/dev/null \
-    | grep -qx trusted
+RAPPS='$HOME/Library/Application Support/TypelessRemoteBridge/Apps'
+remote_untrusted() {  # names of the helper apps on <dest> that are not allowed yet (it may also send)
+  rssh "$1" "find \"$RAPPS\" -maxdepth 1 -name '*.app' 2>/dev/null | while IFS= read -r a; do o=\$(mktemp); open -n -g --stdout \"\$o\" \"\$a\" --args --check-trust; i=0; while [ \$i -lt 20 ] && [ ! -s \"\$o\" ]; do sleep 0.3; i=\$((i + 1)); done; grep -qx trusted \"\$o\" || basename \"\$a\" .app; rm -f \"\$o\"; done" 2>/dev/null
 }
+remote_trusted() { local out; out=$(remote_untrusted "$1") && [[ -z $out ]] && rssh "$1" "[ -d \"$RAPPS\" ]" 2>/dev/null; }
 remote_health() {
   printf '{"op":"health"}\n' | ssh -T -o BatchMode=yes -o ConnectTimeout=5 "$1" \
     '/usr/bin/nc -U -w 3 "$HOME/.local/state/typeless-remote-bridge/receiver.sock"' 2>/dev/null | grep -q '"ready"'
@@ -198,7 +211,7 @@ discover() {  # prints "name<TAB>host" for Macs on this network that offer Scree
   rm -rf "$dir"
 }
 
-PICK_NAME=""; PICK_HOST=""
+PICK_NAME=""; PICK_HOST=""; PICK_MANUAL=""
 choose_mac() {
   title "选择要控制的 Mac" "Choose the Mac to control"
   local found=() line i=0 added pick label
@@ -207,7 +220,7 @@ choose_mac() {
   while IFS= read -r line; do found+=("$line"); done <"$BUILT/step.log"
   for line in ${found[@]+"${found[@]}"}; do
     i=$((i + 1)); label="${line%%$'\t'*}"
-    if [[ $added == *" $(slug "$label") "* ]]; then
+    if [[ $added == *" $(dest_name "$label" "${line#*$'\t'}") "* ]]; then
       printf '    %d) %s  %s\n' "$i" "$label" "$(t "（已添加）" "(already added)")"
     else
       printf '    %d) %s\n' "$i" "$label"
@@ -218,13 +231,14 @@ choose_mac() {
   if [[ $pick == m ]]; then
     PICK_HOST=$(ask "  地址（如 studio.local 或 192.168.1.20）：" "  Address (e.g. studio.local or 192.168.1.20):")
     [[ -n $PICK_HOST ]] || fail "没有输入地址。" "No address given."
-    PICK_NAME=${PICK_HOST%%.*}
+    PICK_NAME=${PICK_HOST%%.*}; PICK_MANUAL=1
   elif [[ $pick =~ ^[0-9]+$ ]] && ((pick >= 1 && pick <= ${#found[@]})); then
     line=${found[$((pick - 1))]}; PICK_NAME=${line%%$'\t'*}; PICK_HOST=${line#*$'\t'}
   else
     fail "没有这个编号。" "No such number."
   fi
-  [[ $added == *" $(slug "$PICK_NAME") "* ]] && fail "${PICK_NAME} 已经添加过了。" "$PICK_NAME is already added."
+  [[ $PICK_HOST != -* && $PICK_HOST != *[[:space:]]* ]] || fail "地址格式不对。" "That address is not valid."
+  [[ $added == *" $(dest_name "$PICK_NAME" "$PICK_HOST") "* ]] && fail "${PICK_NAME} 已经添加过了。" "$PICK_NAME is already added."
   return 0
 }
 
@@ -238,7 +252,7 @@ connect() {  # log in to PICK_* once and set DEST
     "In the Screen Sharing window of $PICK_NAME: System Settings → General → Sharing → turn on Remote Login. This continues by itself."
   local fp user name attempt remote_name
   user=$(whoami)
-  name=$(slug "$PICK_NAME"); [[ -n $name && $name != local ]] || name=mac
+  name=$(dest_name "$PICK_NAME" "$PICK_HOST")
   fp=$(ssh-keyscan -T 5 -t ed25519 "$PICK_HOST" 2>/dev/null | grep -v '^#' | head -1 | ssh-keygen -lf - | awk '{print $2}')
   for attempt in 1 2; do
     if ! rssh "$name" true >/dev/null 2>&1; then
@@ -253,7 +267,7 @@ connect() {  # log in to PICK_* once and set DEST
   done
   # The Mac that answered must be the Mac that was picked.
   remote_name=$(rssh "$name" 'scutil --get ComputerName' 2>/dev/null)
-  if [[ $PICK_HOST == *.local && -n $remote_name ]] && ! same_name "$remote_name" "$PICK_NAME"; then
+  if [[ -z $PICK_MANUAL && -n $remote_name ]] && ! same_name "$remote_name" "$PICK_NAME"; then
     "$ENGINE" unpair "$name" >/dev/null 2>&1
     fail "连上的是\"${remote_name}\"，不是你选的\"${PICK_NAME}\"，已停止。" \
       "Reached \"$remote_name\", not \"$PICK_NAME\" as chosen; stopped."
@@ -281,30 +295,27 @@ grant_remote() {  # grant_remote <dest> <display name>
   if remote_trusted "$1"; then
     ok "$2 上的授权已就绪" "Permission on $2 is in place"
   else
-    # An approval from an older build still shows as ON but no longer applies: clear it, so the
-    # entry the user sees is the new one, switched off.
-    rssh "$1" "tccutil reset Accessibility $RECEIVER_ID" >/dev/null 2>&1
-    remote_trusted "$1"   # makes the new entry appear in the list
-    rssh "$1" "open '$PANE_PERMISSION'" >/dev/null 2>&1
+    # Approvals from an older build still show as ON but no longer apply: clear them, so the
+    # entries the user sees are the new ones, switched off. Same step as the setup window.
+    local missing; missing=$(step_main remote-prepare "$1" | sed -n 's/^missing=//p' | tr ',' ' ')
     title "在 $2 上授权" "Permission on $2"
-    say "  请切到 $2 的屏幕共享窗口，那边已打开\"隐私与安全性 → 设备控制\"。" \
-        "  Switch to the Screen Sharing window of $2: it shows Privacy & Security → Device Control."
-    say "  找到 TypelessBridgeReceiver（蓝绿色麦克风图标，按名字排在 Typeless 旁边），打开它的开关。" \
-        "  Find TypelessBridgeReceiver (blue-green microphone icon, next to Typeless by name) and switch it on."
-    wait_for remote_check "等待 $2 上的开关" "waiting for the switch on $2" \
-      "如果找不到它，或开关打开后这里没有反应：在 $2 上用 − 删掉 TypelessBridgeReceiver，它会自动重新出现，再打开一次。" \
-      "If you cannot find it, or nothing happens after switching it on: remove TypelessBridgeReceiver with − on $2; it reappears by itself, then switch it on again." \
+    say "  请切到 $2 的屏幕共享窗口，那边已打开\"隐私与安全性 → 设备控制\"，右上角还有一个小提示窗。" \
+        "  Switch to the Screen Sharing window of $2: it shows Privacy & Security → Device Control, with a small hint at the top right."
+    say "  打开这些开关（蓝绿色麦克风图标，按名字排在 Typeless 旁边）：${missing:-TypelessBridgeReceiver}" \
+        "  Switch these on (blue-green microphone icon, next to Typeless by name): ${missing:-TypelessBridgeReceiver}"
+    wait_for remote_check "等待 $2 上的开关" "waiting for the switches on $2" \
+      "如果找不到，或开关打开后这里没有反应：在 $2 上用 − 删掉对应的条目，它会自动重新出现，再打开一次。" \
+      "If you cannot find them, or nothing happens after switching them on: remove them with − on $2; they reappear by themselves, then switch them on again." \
       $((HINT_AFTER * 2))
     ok "$2 上已授权" "Allowed on $2"
   fi
-  rssh "$1" "launchctl kickstart -k gui/\$(id -u)/$RECEIVER_ID" >/dev/null 2>&1 &
+  step_main remote-start "$1" >/dev/null 2>&1 &
   wait_for remote_ready "正在启动 $2 上的接收端（几秒钟）" "Starting the receiver on $2 (a few seconds)"
   ok "$2 已可以接收文字" "$2 can now receive text"
 }
 
 local_apps() {  # every helper installed on this Mac (it may also be controlled by another Mac)
-  printf '%s\n' "${SENDER_APPS[@]}"
-  [[ $(option receiver) == 1 ]] && echo TypelessBridgeReceiver
+  local a; for a in "${SENDER_APPS[@]}" TypelessBridgeReceiver; do [[ -d "$APPS/$a.app" ]] && echo "$a"; done
   return 0
 }
 grant_local() {
@@ -453,6 +464,152 @@ main() {
   esac
 }
 
+# ---------- non-interactive steps (used by the setup window) ----------
+# setup --step <name> [args]: one step, no questions, plain "key=value" lines on stdout.
+step_main() {
+  mkdir -p "$BUILT"
+  local name=${1:-}; shift || true
+  case $name in
+    preflight)
+      echo "typeless=$(typeless_ready && echo 1 || echo 0)"
+      echo "tools=$(have_tools && echo 1 || echo 0)"
+      echo "python=$(have_python && echo 1 || echo 0)"
+      echo "version=$(cat "$REPO/VERSION" 2>/dev/null)" ;;
+    install-tools) xcode-select --install >/dev/null 2>&1; return 0 ;;
+    destinations) local d; for d in $(destinations); do echo "$d"; done ;;
+    discover)
+      local line added=" $(destinations) "
+      while IFS= read -r line; do
+        [[ -n $line ]] || continue
+        printf '%s\t%s\t%s\n' "${line%%$'\t'*}" "${line#*$'\t'}" \
+          "$([[ $added == *" $(dest_name "${line%%$'\t'*}" "${line#*$'\t'}") "* ]] && echo added || echo new)"
+      done < <(discover) ;;
+    build) rm -rf "$BUILT/apps"; "$BUILDER" "$BUILT/apps" >"$BUILT/build.log" 2>&1 || { cat "$BUILT/build.log" >&2; return 1; } ;;
+    ssh-open)   # ssh-open <host> [discovered]: 0 open, 1 not (yet) reachable, 3 a typed name that does not resolve
+      PICK_HOST=$1
+      [[ -n $1 && $1 != -* ]] || return 3
+      if [[ ${2:-} != discovered ]] && ! is_address "$1" && [[ -z $(dscacheutil -q host -a name "$1" 2>/dev/null) ]]; then return 3; fi
+      ssh_open ;;
+    connect)   # connect <display name> <host> <account> [check-name]; password in TB_PASSWORD if needed
+      local display=$1 host=$2 user=$3 check=${4:-} dest fp remote_name
+      [[ -n $host && $host != -* && $host != *[[:space:]]* ]] || { echo "error=address"; return 6; }
+      dest=$(dest_name "$display" "$host")
+      [[ " $(destinations) " == *" $dest "* ]] && { echo "error=already-added"; echo "dest=$dest"; return 5; }
+      local own_alias=0
+      if grep -qiE "^[[:space:]]*Host([[:space:]].*)?[[:space:]]$dest([[:space:]]|\$)" "$HOME/.ssh/config" 2>/dev/null \
+         && ! grep -qxF "# >>> typeless-bridge $dest" "$HOME/.ssh/config"; then own_alias=1; fi
+      fp=$(ssh-keyscan -T 5 -t ed25519 "$host" 2>/dev/null | grep -v '^#' | head -1 | ssh-keygen -lf - | awk '{print $2}')
+      [[ -n $fp ]] || { echo "error=unreachable"; return 4; }
+      SSH_ASKPASS="$REPO/install/askpass.sh" SSH_ASKPASS_REQUIRE=force \
+        "$ENGINE" pair "$dest" "$user@$host" --fingerprint "$fp" </dev/null >/dev/null 2>"$BUILT/pair.log" \
+        || { echo "error=login"; return 2; }
+      remote_name=$(rssh "$dest" 'scutil --get ComputerName' 2>/dev/null)
+      if [[ $check == check-name && -n $remote_name ]] && ! same_name "$remote_name" "$display"; then
+        "$ENGINE" unpair "$dest" >/dev/null 2>&1
+        echo "error=wrong-mac"; echo "remote=$remote_name"; return 3
+      fi
+      if ((own_alias)) && [[ $(ssh -G "$dest" 2>/dev/null | awk '$1 == "hostname" {print $2}') != "$host" ]] \
+         && ! { [[ -n $remote_name ]] && same_name "$remote_name" "$display"; }; then
+        echo "error=alias-conflict"; echo "dest=$dest"; return 7
+      fi
+      echo "dest=$dest" ;;
+    install-remote) remote_payload "$1" >"$BUILT/remote.log" 2>&1 || { cat "$BUILT/remote.log" >&2; return 1; } ;;
+    remote-trusted) remote_trusted "$1" ;;
+    remote-prepare)   # clear stale approvals, make the entries appear, open Device Control there
+      local a missing; missing=$(remote_untrusted "$1")
+      for a in $missing; do
+        rssh "$1" "tccutil reset Accessibility \$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \"$RAPPS/$a.app/Contents/Info.plist\")" >/dev/null 2>&1
+      done
+      remote_untrusted "$1" >/dev/null
+      printf 'missing=%s\n' "$(printf '%s' "$missing" | paste -sd, -)"
+      rssh "$1" "open '$PANE_PERMISSION'" >/dev/null 2>&1
+      rssh "$1" "open -n -g \"$RAPP\" --args --hint '$(t "请打开下面列表中 TypelessBridge 开头的所有开关" "Switch on everything starting with TypelessBridge in the list below")'" >/dev/null 2>&1
+      return 0 ;;
+    remote-start)
+      rssh "$1" "pkill -f -- '[-]-hint'; launchctl kickstart -k gui/\$(id -u)/$RECEIVER_ID; launchctl print gui/\$(id -u)/org.local.typelessbridge.sender >/dev/null 2>&1 && launchctl kickstart -k gui/\$(id -u)/org.local.typelessbridge.sender; true" >/dev/null 2>&1
+      local i; for i in $(seq 1 20); do remote_health "$1" && return 0; sleep 1; done; return 1 ;;
+    install-local)   # install-local <dest|-> : add a destination (or just reinstall with "-")
+      if [[ ${1:-} == - ]]; then "$ENGINE" configure --apps-dir "$BUILT/apps"
+      else "$ENGINE" configure --add-sender "$1" --apps-dir "$BUILT/apps"; fi >"$BUILT/local.log" 2>&1 \
+        || { cat "$BUILT/local.log" >&2; return 1; } ;;
+    local-missing) local a; while IFS= read -r a; do local_trusted "$a" || echo "$a"; done < <(local_apps) ;;
+    local-prepare)
+      local a; for a in "$@"; do "$TCCUTIL" reset Accessibility "$(bundle_id "$a")" >/dev/null 2>&1; done
+      for a in "$@"; do local_trusted "$a"; done
+      open "$PANE_PERMISSION" >/dev/null 2>&1; return 0 ;;
+    local-trusted) local a; for a in "$@"; do local_trusted "$a" || return 1; done ;;
+    local-start)
+      SENDER_MARK=$(wc -l <"$LOGS/sender.log" 2>/dev/null || echo 0)
+      [[ $(option receiver) == 1 ]] && "$LAUNCHCTL" kickstart -k "gui/$(id -u)/$RECEIVER_ID" >/dev/null 2>&1 &
+      "$LAUNCHCTL" kickstart -k "gui/$(id -u)/org.local.typelessbridge.sender" >/dev/null 2>&1 &
+      local i; for i in $(seq 1 60); do sender_ready && return 0; sleep 1; done; return 1 ;;
+    log-mark) wc -l <"$LOGS/sender.log" 2>/dev/null | tr -d ' ' || echo 0 ;;
+    test-result)   # test-result <mark>: delivered | local | failed:<reason> | none
+      local line; line=$(tail -n +"$((${1:-0} + 1))" "$LOGS/sender.log" 2>/dev/null | grep -E "RESULT " | tail -1)
+      case $line in
+        *paste-sent-unconfirmed*) echo delivered ;; *"RESULT local") echo local ;; *"RESULT unknown") echo other-window ;;
+        *RESULT*) echo "failed:${line##*RESULT }" ;; *) echo none ;;
+      esac ;;
+    remove)   # remove <dest> [--remote]
+      "$ENGINE" configure --remove-sender "$1" >/dev/null 2>&1 || return 1
+      if [[ ${2:-} == --remote ]] && ! rssh "$1" "bash $REMOTE_DIR/install/typeless-bridge.sh configure --receiver off" >/dev/null 2>&1; then
+        echo "unreachable=$1"
+      fi
+      "$ENGINE" unpair "$1" >/dev/null 2>&1; return 0 ;;
+    uninstall-all)   # uninstall-all [--remote]
+      local d missed=""; for d in $(destinations); do
+        if [[ ${1:-} == --remote ]] && ! rssh "$d" "bash $REMOTE_DIR/install/typeless-bridge.sh configure --receiver off" >/dev/null 2>&1; then
+          missed="${missed:+$missed, }$d"
+        fi
+        "$ENGINE" configure --remove-sender "$d" >/dev/null 2>&1; "$ENGINE" unpair "$d" >/dev/null 2>&1
+      done
+      for d in $(sed -n 's/^# >>> typeless-bridge //p' "$HOME/.ssh/config" 2>/dev/null); do "$ENGINE" unpair "$d" >/dev/null 2>&1; done
+      [[ -n $missed ]] && echo "unreachable=$missed"
+      rm -rf "$BUILT/apps" "$BUILT"/*.log; return 0 ;;
+    *) echo "unknown step: $name" >&2; return 64 ;;
+  esac
+}
+
+if [[ ${1:-} == --window ]]; then   # build and open the setup window (what install.sh does)
+  if pgrep -f "Screen Sharing Bridge Setup.app/Contents/MacOS/SetupWindow" >/dev/null 2>&1; then
+    open -b org.local.typelessbridge.setup 2>/dev/null
+    say "安装窗口已经开着，已把它带到最前面。" "The setup window is already open; it has been brought to the front."
+    exit 0
+  fi
+  mkdir -p "$BUILT"
+  app="$BUILT/window/Screen Sharing Bridge Setup.app"
+  # Rebuild only when the window's sources, the chip or the compiler changed.
+  key=$({ cat "$REPO/apps/setup-window.swift" "$REPO/install/build_setup_app.sh" "$REPO/apps/AppIcon.icns"
+          uname -m; swiftc --version 2>&1; } | shasum | cut -d' ' -f1)
+  if [[ ! -x "$app/Contents/MacOS/SetupWindow" || $(cat "$BUILT/window.key" 2>/dev/null) != "$key" ]]; then
+    rm -f "$BUILT/window.key"
+    [[ -d $TB_MODULE_CACHE ]] && first="" || first=1
+    msg=$(t "正在准备安装窗口${first:+（第一次大约 30 秒）}…" "Preparing the setup window${first:+ (about 30 s the first time)}…")
+    "$REPO/install/build_setup_app.sh" "$BUILT/window" >/dev/null 2>"$BUILT/window.log" &
+    pid=$!; start=$SECONDS
+    while kill -0 "$pid" 2>/dev/null; do spin "$msg $((SECONDS - start)) s"; sleep 0.2; done
+    printf '\r\033[K'
+    wait "$pid" || { cat "$BUILT/window.log" >&2; say "安装窗口没能编译成功。" "Could not build the setup window." >&2; exit 1; }
+    printf '%s\n' "$key" >"$BUILT/window.key"
+    ok "安装窗口已准备好" "Setup window ready"
+  fi
+  open -n "$app" --args "$REPO" || exit 1
+  # Say "open" only once it is: the first launch of a new app can take a few seconds.
+  for _ in $(seq 1 50); do
+    pgrep -f "Screen Sharing Bridge Setup.app/Contents/MacOS/SetupWindow" >/dev/null 2>&1 && break
+    spin "$(t "正在打开安装窗口…" "Opening the setup window…")"; sleep 0.2
+  done
+  printf '\r\033[K'
+  # macOS does not let a freshly launched app take focus by itself; asking LaunchServices to
+  # open the running app again (from the frontmost Terminal) brings its window to the front.
+  sleep 0.6; open "$app" >/dev/null 2>&1 || true
+  ok "安装窗口已打开，请在窗口里继续。" "The setup window is open; continue there."
+  say "  现在可以关掉这个终端窗口了（按 ⌘W）。" "  You can now close this Terminal window (press ⌘W)."
+  exit 0
+fi
+if [[ ${1:-} == --step ]]; then
+  shift; step_main "$@"; exit $?
+fi
 if [[ ${TB_SETUP_LIBRARY:-} != 1 ]]; then
   exec 3<"$TTY" || { echo "setup needs a terminal" >&2; exit 1; }
   main "$@"

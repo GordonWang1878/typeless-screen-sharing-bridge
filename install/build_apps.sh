@@ -3,7 +3,8 @@
 #
 # Usage: install/build_apps.sh <output-dir>
 #
-# Writes only inside <output-dir> (plus a mktemp work dir that is removed on exit).
+# Writes only inside <output-dir> (plus a mktemp work dir that is removed on exit). Set
+# TB_MODULE_CACHE to a folder to keep Swift's module cache between builds (saves ~25 s each).
 # Never installs, launches, or touches ~/Library or ~/Applications.
 # Only --self-test is ever executed.
 set -euo pipefail
@@ -47,7 +48,7 @@ make_bundle() {
   local arch slices=()
   for arch in arm64 x86_64; do
     (cd "$REPO_ROOT/apps" && swiftc -target "$arch-apple-macos13" -module-name "$module" \
-      -module-cache-path "$WORK/modcache-$arch" -o "$WORK/$exec-$arch" "$@")
+      -module-cache-path "${TB_MODULE_CACHE:-$WORK}/modcache-$arch" -o "$WORK/$exec-$arch" "$@")
     slices+=("$WORK/$exec-$arch")
   done
   lipo -create -output "$app/Contents/MacOS/$exec" "${slices[@]}"

@@ -12,8 +12,8 @@ Each run adds one controlled Mac and installs the receiver there over SSH:
 curl -fsSL https://raw.githubusercontent.com/GordonWang1878/typeless-screen-sharing-bridge/main/install.sh | bash
 ```
 
-The wizard is interactive (pick a Mac, its password once, permission switches, final test). Running
-it yourself only works if you can hand the user a real terminal.
+It opens a setup window (pick a Mac, its password once, permission switches, final test). From a
+checkout, `./setup --window` opens the same window and `./setup` runs it in the terminal instead.
 
 ## If you must drive it step by step
 
