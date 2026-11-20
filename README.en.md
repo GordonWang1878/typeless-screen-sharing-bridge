@@ -23,7 +23,11 @@
 
 When you control another Mac with Apple's Screen Sharing, Typeless can only hand its text to the
 Mac in front of you, and the text field over there never gets it. You end up with a stray "V" on
-the remote Mac, or the text stuck in Typeless' copy popup for you to copy and paste by hand.
+the remote Mac, and the text stuck in Typeless' copy popup.
+
+Even clicking **Copy** doesn't help right away: Screen Sharing only sends your pasteboard to the
+remote Mac when its window becomes active again. So you have to click somewhere on your own Mac,
+click back into the Screen Sharing window, and only then paste. Every sentence.
 
 With the bridge installed, whenever a Screen Sharing window is in front, what you say appears
 **at the cursor on that Mac**, exactly once and without a stray "V".
@@ -41,8 +45,8 @@ Nothing new to learn:
 
 - **Screen Sharing in front:** dictate with Typeless as usual. The text appears at the remote
   cursor and Typeless' copy popup closes by itself.
-- **If the popup stays open, that sentence did not arrive:** click Copy and paste it yourself,
-  just as Typeless asks you to on a single Mac.
+- **If the popup stays open, that sentence did not arrive:** click Copy, click somewhere on your
+  own Mac and back into the Screen Sharing window (so the pasteboard reaches it), then paste.
 - **Screen Sharing not in front:** nothing changes; the bridge stays out of the way.
 
 ## Install
