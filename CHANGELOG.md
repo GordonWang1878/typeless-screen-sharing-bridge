@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- README rewritten as a landing page, in Chinese and English: what it solves (including that
+  clicking Copy does not reach the remote Mac until its Screen Sharing window is activated again),
+  a three-step picture and screenshots of the setup window, each in light and dark. The pictures
+  are left out of the download used by the one-line install.
+
 ## 1.0.0 — 2026-11-18
 
 - **A setup window replaces the terminal wizard.** The one-line install builds it on your Mac

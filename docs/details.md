@@ -19,6 +19,17 @@ Typeless finishes a dictation
 | TypelessBridgeProbe | `apps/probe.swift` | names the Mac shown in the front Screen Sharing window · 识别前台屏幕共享窗口对应的 Mac |
 | TypelessBridgeReceiver | `apps/receiver.swift` (LaunchAgent `org.local.typelessbridge.receiver`) | pastes received text at the cursor · 把收到的文字粘贴到光标处 |
 
+## Setup · 安装
+
+The one-line install downloads the code to `~/.local/share/typeless-remote-bridge` and opens the
+setup window (`apps/setup-window.swift`, built on your Mac by `install/build_setup_app.sh`). The
+window only presents and asks; every real step is `setup --step …`, the same steps the terminal
+wizard (`./setup`) uses. It runs on the Mac you talk to and installs the receiver on the other Mac
+over SSH. Nothing of the setup keeps running afterwards. ·
+一行命令把代码下载到 `~/.local/share/typeless-remote-bridge`，并打开安装窗口（在你的 Mac 上现场编译）。窗口只负责展示和提问，实际操作都由 `setup --step …` 完成，和终端向导 `./setup` 用的是同一套步骤。安装只在你说话的那台 Mac 上运行，经 SSH 把接收端装到另一台；装完后安装程序不会留在后台运行。
+
+## Recognising Macs · 识别 Mac
+
 - A Mac is recognised by the name in its Screen Sharing connection (`Studio (alice).vncloc` →
   `studio`), matched against the names each receiver reports about itself over SSH. The login
   user name does not matter. · 按屏幕共享连接里的机器名识别，与登录用户名无关。
@@ -33,7 +44,7 @@ Typeless finishes a dictation
 |---|---|
 | `TARGET studio` → `RESULT paste-sent-unconfirmed` → `POPUP_CLOSED` | delivered · 已送达 |
 | `RESULT local` | Screen Sharing not in front · 前台不是屏幕共享 |
-| `TARGET unknown:name-not-recognized` | window of a Mac that is not paired · 未配对的 Mac 的窗口 |
+| `TARGET unknown:name-not-recognized` | window of a Mac that has not been added · 还没添加的 Mac 的窗口 |
 | `POPUP_LEFT not-delivered`, `RESULT not-sent`, other `RESULT …` | not delivered, popup left open · 没送达，弹窗保留 |
 | `LATE_COMPLETION` / `GAVE_UP` | Typeless finished after a retry / never finished · Typeless 重试后完成 / 一直没完成 |
 | `GUARD_NOT_READY` | the guard is not allowed in Device Control yet · Guard 还没授权 |
