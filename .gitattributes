@@ -1,0 +1,2 @@
+# README pictures are not needed to install: keep them out of the download archives.
+docs/images export-ignore

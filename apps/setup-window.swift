@@ -1555,6 +1555,11 @@ enum Entry {
         if let i = args.firstIndex(of: "--write-ding"), i + 1 < args.count {
             try? Chime.wav().write(to: URL(fileURLWithPath: args[i + 1])); exit(0)
         }
+        #if README_ART
+        if let i = args.firstIndex(of: "--readme-art"), i + 1 < args.count {
+            ReadmeArt.render(to: args[i + 1], repo: FileManager.default.currentDirectoryPath); exit(0)
+        }
+        #endif
         if let i = args.firstIndex(of: "--snapshot"), i + 1 < args.count {
             let repo = FileManager.default.currentDirectoryPath
             Snapshots.render(to: args[i + 1], repo: repo)
