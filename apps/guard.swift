@@ -324,6 +324,14 @@ let callback: CGEventTapCallBack = { _, type, event, opaque in
         state.onSuppressed()
         return nil
     }
+    // Typeless' own paste let through: say why (yes/no answers only, nothing typed, no app names),
+    // so a missed paste in the sender's log can be told apart from a guard that sees nothing.
+    if key == 9 && source == typeless && typeless > 0 && event.flags.contains(.maskCommand) {
+        let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.ScreenSharing"
+        let alive = fresh(heartbeatTime(), now: Date().timeIntervalSince1970)
+        print("TYPELESS_PASTE_PASSED screen-sharing=\(front ? "yes" : "no") remote=\(state.isConfiguredRemote ? "yes" : "no") heartbeat=\(alive ? "yes" : "no")")
+        fflush(stdout)
+    }
     return Unmanaged.passUnretained(event)
 }
 let mask = CGEventMask((1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue))

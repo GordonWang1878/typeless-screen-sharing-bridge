@@ -24,6 +24,8 @@
 | `POPUP_CLOSED` | 已自动关掉 Typeless 的"复制最后的转录"（Copy last transcript）弹窗 |
 | `POPUP_LEFT <原因>` | 弹窗保留：`not-delivered` 这句没送达（20 秒内无送达确认）、`not-found` 没出现、`layout` 结构对不上、`target` 前台已不是配置的远程窗口、`press-failed` 按下失败 |
 | `RESULT not-sent` | Guard 拦下了 Typeless 的粘贴，但 20 秒内没有任何投递结果（例如焦点探针没认出窗口）；弹窗保留 |
+| `GUARD_MISSED` | 这句已送到远端，但 20 秒内 Guard 没拦下 Typeless 自己的粘贴（远端会多出一个 "V"）。若同时没有 `TYPELESS_PASTE_PASSED`，说明 Guard 什么都没收到：macOS 仍报告它"已授权"，但授权已失效。在设备控制里用"−"删掉 TypelessBridgeGuard，它会自动重新出现，再打开即可 |
+| `TYPELESS_PASTE_PASSED screen-sharing=… remote=… heartbeat=…` | Guard 看到了 Typeless 的粘贴但放行了，三个"yes/no"说明原因（前台是否屏幕共享、是否认出是配置的远程 Mac、发送端心跳是否正常）；不含任何文字或 App 名 |
 | `SKIP_AMBIGUOUS` | 同一时刻出现两条新听写记录，无法确定对应哪句而跳过；若当时 Guard 拦了粘贴，会随后出现 `RESULT not-sent` |
 | `LATE_COMPLETION` | Typeless 先把这句标成出错，随后重试成功；照常送出 |
 | `GAVE_UP <状态>` | 一句被标成出错/取消后 3 分钟内没有恢复，不再等待 |

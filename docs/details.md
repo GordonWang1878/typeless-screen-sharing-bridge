@@ -48,6 +48,7 @@ over SSH. Nothing of the setup keeps running afterwards. ·
 | `POPUP_LEFT not-delivered`, `RESULT not-sent`, other `RESULT …` | not delivered, popup left open · 没送达，弹窗保留 |
 | `LATE_COMPLETION` / `GAVE_UP` | Typeless finished after a retry / never finished · Typeless 重试后完成 / 一直没完成 |
 | `GUARD_NOT_READY` | the guard is not allowed in Device Control yet · Guard 还没授权 |
+| `GUARD_MISSED` | delivered, but Typeless' own paste was not stopped (a stray "V"): remove TypelessBridgeGuard in Device Control with "−" and switch it on again · 已送达但没拦下 Typeless 的粘贴（多出 "V"）：在设备控制里用"−"删掉 Guard 再重新打开 |
 
 All lines: [service/README.md](../service/README.md).
 

@@ -276,6 +276,29 @@ class SuppressionLedger(unittest.TestCase):
             sender.handle_guard_lines([], self.ledger)
         self.assertTrue(printed[0].endswith("RESULT not-sent"))
 
+    def test_delivery_without_suppression_is_a_missed_guard(self):
+        printed = []
+        self.ledger.result(delivered=True); self.at(19)
+        self.assertEqual((self.ledger.expired(), self.ledger.take_missed()), (0, 0))
+        self.at(21)
+        with mock.patch("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a)))):
+            sender.handle_guard_lines([], self.ledger)
+            sender.handle_guard_lines([], self.ledger)   # reported once
+        self.assertEqual([line.split(" ", 1)[1] for line in printed], ["GUARD_MISSED"])
+
+    def test_undelivered_or_paired_results_are_not_missed(self):
+        self.ledger.result(delivered=False)                                # nothing went out
+        self.at(30); self.ledger.expired()
+        self.at(31); self.ledger.suppression(); self.at(32); self.ledger.result(delivered=True)
+        self.at(60); self.ledger.expired()
+        self.assertEqual(self.ledger.take_missed(), 0)
+
+    def test_passed_paste_reason_is_logged(self):
+        printed = []
+        with mock.patch("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a)))):
+            sender.handle_guard_lines(["TYPELESS_PASTE_PASSED screen-sharing=yes remote=no heartbeat=yes"], self.ledger)
+        self.assertEqual(printed[0].split(" ", 1)[1], "TYPELESS_PASTE_PASSED screen-sharing=yes remote=no heartbeat=yes")
+
     def test_report_closes_suppression_for_sent_and_undelivered_only(self):
         with mock.patch.object(sender, "LEDGER", self.ledger), mock.patch("builtins.print"):
             for status in ("paste-sent-unconfirmed", "delivery-unconfirmed", "unknown", "local"):

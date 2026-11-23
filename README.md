@@ -114,6 +114,8 @@ curl -fsSL https://raw.githubusercontent.com/GordonWang1878/typeless-screen-shar
 
 **不在同一个局域网的 Mac 能用吗？** 只要两台 Mac 能互相连上（比如用 Tailscale 这类组网工具），在安装窗口里选"输入地址"，填对方的地址即可。这类场景还没有专门测试过。
 
+**又出现了多余的 "V"？** 在你说话的那台 Mac 上打开"系统设置 → 隐私与安全性 → 设备控制"，用"−"删掉 TypelessBridgeGuard，它会自动重新出现，再把开关打开。macOS 偶尔会让这个授权悄悄失效：开关看起来是开着的，实际已经不起作用。
+
 **怎么卸载？** 再运行安装命令，在窗口里选"全部卸载…"。
 
 ## 更多

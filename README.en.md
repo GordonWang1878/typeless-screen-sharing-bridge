@@ -131,6 +131,10 @@ connection, which is that Mac's name. If you renamed a saved connection, rename 
 "Enter an address" in the setup window and type the other Mac's address. Not specifically tested
 yet.
 
+**A stray "V" is back?** On the Mac you talk to, open System Settings → Privacy & Security →
+Device Control, remove TypelessBridgeGuard with "−" (it reappears by itself) and switch it on
+again. macOS occasionally lets this permission go stale while the switch still looks on.
+
 **How do I uninstall?** Run the install line again and choose "Uninstall…" in the window.
 
 ## More

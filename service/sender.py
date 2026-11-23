@@ -79,36 +79,52 @@ class SuppressionLedger:
 
     A suppression left unpaired means Typeless' paste was swallowed but nothing was sent
     (focus probe disagreed with the guard, an ambiguous record was skipped, ...).
+    A delivered sentence left unpaired means the guard never stopped Typeless' own paste: the
+    remote Mac got a stray "V". Seen when macOS still reports the guard as allowed but its event
+    tap no longer receives anything (cause unknown); switching the guard off and on in Device
+    Control restored it that time.
     """
 
     def __init__(self, window=SUPPRESSION_WINDOW, now=time.monotonic):
         self.window, self.now = window, now
-        self.suppressions, self.results = [], []
+        self.suppressions, self.results = [], []   # moments; results are (moment, delivered)
+        self.missed = 0
         self.lock = threading.Lock()
 
-    def _pair(self, own, other):
+    def suppression(self):
         with self.lock:
             moment = self.now()
-            for index, other_moment in enumerate(other):
-                if abs(moment - other_moment) <= self.window:
-                    del other[index]
+            for index, (other, _) in enumerate(self.results):
+                if abs(moment - other) <= self.window:
+                    del self.results[index]
                     return
-            own.append(moment)
+            self.suppressions.append(moment)
 
-    def suppression(self):
-        self._pair(self.suppressions, self.results)
-
-    def result(self):
-        self._pair(self.results, self.suppressions)
+    def result(self, delivered=False):
+        with self.lock:
+            moment = self.now()
+            for index, other in enumerate(self.suppressions):
+                if abs(moment - other) <= self.window:
+                    del self.suppressions[index]
+                    return
+            self.results.append((moment, delivered))
 
     def expired(self):
-        """Number of suppressions that will never be paired; they are forgotten."""
+        """Number of suppressions that will never be paired; they are forgotten.
+
+        Delivered sentences that will never be paired are counted for take_missed()."""
         with self.lock:
             moment = self.now()
             lost = [s for s in self.suppressions if moment - s > self.window]
             self.suppressions = [s for s in self.suppressions if moment - s <= self.window]
-            self.results = [r for r in self.results if moment - r <= self.window]
+            self.missed += sum(1 for at, delivered in self.results if delivered and moment - at > self.window)
+            self.results = [r for r in self.results if moment - r[0] <= self.window]
             return len(lost)
+
+    def take_missed(self):
+        with self.lock:
+            missed, self.missed = self.missed, 0
+            return missed
 
 
 LEDGER = SuppressionLedger()
@@ -117,12 +133,14 @@ LEDGER = SuppressionLedger()
 def handle_guard_lines(lines, ledger=None):
     ledger = ledger or LEDGER
     for line in lines:
-        if line.startswith("POPUP_"):
+        if line.startswith("POPUP_") or line.startswith("TYPELESS_PASTE_PASSED"):
             print(time.strftime("%H:%M:%S"), line, flush=True)
         elif line == "TYPELESS_PASTE_SUPPRESSED":
             ledger.suppression()
     for _ in range(ledger.expired()):
         print(time.strftime("%H:%M:%S"), "RESULT not-sent", flush=True)
+    for _ in range(ledger.take_missed()):
+        print(time.strftime("%H:%M:%S"), "GUARD_MISSED", flush=True)
 
 
 def find_one(marker, executable):
@@ -184,7 +202,7 @@ DELIVERED = {"file": None}
 def report(status):
     print(time.strftime("%H:%M:%S"), "RESULT", status, flush=True)
     if status in CLOSES_SUPPRESSION:
-        LEDGER.result()
+        LEDGER.result(delivered=status == "paste-sent-unconfirmed")
     if status == "paste-sent-unconfirmed" and DELIVERED["file"] is not None:
         try:
             with open(DELIVERED["file"], "a") as handle:
