@@ -168,6 +168,8 @@ cmd_install() {
     echo "state $RECEIVER_STATE" >> "$manifest"
   fi
   echo "options sender=${dests:-none} receiver=$receiver" >> "$manifest"
+  # Which release is installed (shown by the setup window; installs before 1.0.1 have no line).
+  [[ -f "$REPO/VERSION" ]] && echo "version $(tr -d '[:space:]' < "$REPO/VERSION")" >> "$manifest"
   mv "$manifest" "$ROOT/manifest"
 
   # launchd can refuse a bootstrap right after a bootout of the same label: retry once. Kept inline
@@ -406,6 +408,7 @@ cmd_unpair() {
 cmd_status() {
   [[ -e "$ROOT/manifest" ]] || { echo "not installed"; return 0; }
   grep '^options' "$ROOT/manifest"
+  grep '^version' "$ROOT/manifest" || true
   local kind value
   while read -r kind value; do
     [[ $kind == agent ]] || continue

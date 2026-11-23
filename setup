@@ -278,7 +278,7 @@ connect() {  # log in to PICK_* once and set DEST
 
 remote_payload() {  # remote_payload <dest>: copy the built receiver to <dest> and install it there
   local stage rc; stage=$(mktemp -d "${TMPDIR:-/tmp}/tb-stage.XXXXXX")
-  cp -R "$REPO/install" "$REPO/service" "$stage/" && cp -R "$BUILT/apps" "$stage/built"
+  cp -R "$REPO/install" "$REPO/service" "$REPO/VERSION" "$stage/" && cp -R "$BUILT/apps" "$stage/built"
   tar -C "$stage" -cf - . | ssh -T -o BatchMode=yes "$1" \
     "rm -rf $REMOTE_DIR.new && mkdir -p $REMOTE_DIR.new && tar -C $REMOTE_DIR.new -xf - && rm -rf $REMOTE_DIR && mv $REMOTE_DIR.new $REMOTE_DIR"
   rc=$?; rm -rf "$stage"; ((rc == 0)) || return $rc
@@ -477,6 +477,18 @@ step_main() {
       echo "version=$(cat "$REPO/VERSION" 2>/dev/null)" ;;
     install-tools) xcode-select --install >/dev/null 2>&1; return 0 ;;
     destinations) local d; for d in $(destinations); do echo "$d"; done ;;
+    versions)   # available=<downloaded>, local=<installed here>, remote <dest>=<installed there>
+      # An install without a version line predates 1.0.1; "unreachable" if a Mac cannot be asked.
+      local d v
+      printf 'available=%s\n' "$(tr -d '[:space:]' < "$REPO/VERSION" 2>/dev/null)"
+      printf 'local=%s\n' "$(sed -n 's/^version //p' "$ROOT/manifest" 2>/dev/null)"
+      for d in $(destinations); do
+        if v=$(rssh "$d" "sed -n 's/^version //p' \"\$HOME/Library/Application Support/TypelessRemoteBridge/manifest\" 2>/dev/null; true" 2>/dev/null); then
+          printf 'remote %s=%s\n' "$d" "$v"
+        else
+          printf 'remote %s=unreachable\n' "$d"
+        fi
+      done ;;
     discover)
       local line added=" $(destinations) "
       while IFS= read -r line; do

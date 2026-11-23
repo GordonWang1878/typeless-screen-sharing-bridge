@@ -1,14 +1,17 @@
 # Changelog
 
-## Unreleased
+## 1.0.1 — 2026-11-23
 
+- The setup window's home page shows versions: the one just downloaded, and the one installed on
+  this Mac and on each Mac you control. When something is older the main button reads
+  "Upgrade to …"; when everything is current it reads "Reinstall". Installs now record their
+  version (older installs show as "1.0.0 or earlier").
 - Added fault diagnosis: when a sentence reaches the remote Mac but Typeless' own paste was not
   stopped (a stray "V"), the log now records `GUARD_MISSED`, and the guard notes why it let
   Typeless' paste through (yes/no answers only). The cause of this fault is not known yet: once,
   macOS kept reporting the guard as allowed while it no longer received anything. The README
   describes how to recover (remove the guard in Device Control and switch it on again); this
   does not prevent the fault from happening again.
-
 - README rewritten as a landing page, in Chinese and English: what it solves (including that
   clicking Copy does not reach the remote Mac until its Screen Sharing window is activated again),
   a three-step picture and screenshots of the setup window, each in light and dark. The pictures

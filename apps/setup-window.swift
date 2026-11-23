@@ -115,6 +115,12 @@ final class Model: ObservableObject {
     @Published var confirmRemove: String?
     @Published var confirmUninstall = false
     @Published var upgrading = false
+    @Published var reinstalling = false      // the upgrade button was "Reinstall" (already up to date)
+    // Versions: what was just downloaded, what this Mac and each controlled Mac have installed.
+    // "" = installed before versions were recorded (1.0.0 or earlier); "unreachable" = not asked.
+    @Published var versionsKnown = false
+    @Published var installedHere = ""
+    @Published var installedThere: [String: String] = [:]
     @Published var currentRemote = ""        // the controlled Mac being installed or updated
     var dest = ""
     var abandon = false                      // the user went back during a wait
@@ -167,7 +173,32 @@ final class Model: ObservableObject {
 
     func start() async {
         controlled = await runner.run(["destinations"]).output.split(separator: "\n").map(String.init)
-        if controlled.isEmpty { await check() } else { menu = true }
+        if controlled.isEmpty { await check() } else { menu = true; await loadVersions() }
+    }
+
+    func loadVersions() async {
+        versionsKnown = false
+        let r = await runner.run(["versions"])
+        installedHere = r.value("local") ?? ""
+        var there: [String: String] = [:]
+        for line in r.output.split(separator: "\n") where line.hasPrefix("remote ") {
+            let rest = line.dropFirst("remote ".count)
+            if let eq = rest.firstIndex(of: "=") { there[String(rest[..<eq])] = String(rest[rest.index(after: eq)...]) }
+        }
+        installedThere = there
+        versionsKnown = true
+    }
+    /// Everything installed is the version that was just downloaded.
+    var upToDate: Bool {
+        versionsKnown && !version.isEmpty && installedHere == version && controlled.allSatisfy { installedThere[$0] == version }
+    }
+    func versionLabel(_ v: String?) -> String {
+        switch v {
+        case nil: return "…"
+        case "": return L("1.0.0 或更早", "1.0.0 or earlier")
+        case "unreachable": return L("连不上", "not reachable")
+        default: return v!
+        }
     }
 
     /// Back to the beginning for another Mac, without reopening the window.
@@ -402,7 +433,14 @@ final class Model: ObservableObject {
         }
         mark(2, .done); activity = nil
         await beat(0.8)
-        if upgrading { finish(L("已升级", "Upgraded"), L("已升级到最新版本，可以继续使用了。", "You are on the latest version. Ready to use."), added: false); return }
+        if upgrading {
+            if reinstalling {
+                finish(L("已重新安装", "Reinstalled"), L("已重新安装 \(version)，可以继续使用了。", "\(version) is reinstalled. Ready to use."), added: false)
+            } else {
+                finish(L("已升级", "Upgraded"), L("已升级到 \(version)，可以继续使用了。", "Upgraded to \(version). Ready to use."), added: false)
+            }
+            return
+        }
         await test()
     }
 
@@ -1119,9 +1157,21 @@ struct Footer: View {
         if !model.problem.isEmpty && !model.busy, let retry = model.retry {
             Button(L("重试", "Try again")) { model.act(retry) }.keyboardShortcut(.defaultAction).buttonStyle(BrandButtonStyle())
         } else if model.menu {
-            Button(L("全部升级", "Upgrade")) { model.upgrading = true; model.act { await model.check() } }.disabled(model.busy)
-            Button(L("添加一台 Mac", "Add a Mac")) { model.act { await model.addAnother() } }
+            // An upgrade on offer becomes the main action; once everything is current it only reinstalls.
+            if model.versionsKnown && !model.upToDate {
+                Button(L("添加一台 Mac", "Add a Mac")) { model.act { await model.addAnother() } }.disabled(model.busy)
+                Button(L("升级到 \(model.version)", "Upgrade to \(model.version)")) {
+                    model.reinstalling = false; model.upgrading = true; model.act { await model.check() }
+                }
                 .keyboardShortcut(.defaultAction).buttonStyle(BrandButtonStyle()).disabled(model.busy)
+            } else {
+                Button(model.upToDate ? L("重新安装", "Reinstall") : L("全部升级", "Upgrade")) {
+                    model.reinstalling = model.upToDate; model.upgrading = true; model.act { await model.check() }
+                }
+                .disabled(model.busy || !model.versionsKnown)
+                Button(L("添加一台 Mac", "Add a Mac")) { model.act { await model.addAnother() } }
+                    .keyboardShortcut(.defaultAction).buttonStyle(BrandButtonStyle()).disabled(model.busy)
+            }
         } else if model.stage == .done {
             if model.finishedAdded {
                 Button(L("再添加一台 Mac", "Add another Mac")) { model.act { await model.addAnother() } }
@@ -1199,7 +1249,13 @@ struct HomeView: View {
                         Image(systemName: "desktopcomputer").font(.system(size: 17)).foregroundStyle(Brand.gradient)
                             .frame(width: 30, height: 30)
                             .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Brand.sky.opacity(0.10)))
-                        Text(name).font(.system(size: 13, weight: .medium))
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(name).font(.system(size: 13, weight: .medium))
+                            if model.versionsKnown {
+                                Text(L("版本 ", "Version ") + model.versionLabel(model.installedThere[name]))
+                                    .font(.system(size: 11)).foregroundColor(.secondary)
+                            }
+                        }
                         Spacer()
                         Button(L("移除…", "Remove…")) { model.confirmRemove = name }
                             .buttonStyle(.borderless).foregroundColor(.secondary).disabled(model.busy)
@@ -1208,11 +1264,38 @@ struct HomeView: View {
                 }
             }
             .card(padding: 12)
+            VersionLine(model: model)
             Toggle(L("移除或卸载时，同时卸载那台 Mac 上的接收端", "When removing, also uninstall the receiver on that Mac"), isOn: $model.alsoRemote)
                 .toggleStyle(.checkbox).font(.system(size: 12)).foregroundColor(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
             Notes(model: model)
         }
+    }
+}
+
+/// Home: are the installed versions the one just downloaded?
+struct VersionLine: View {
+    @ObservedObject var model: Model
+    var body: some View {
+        HStack(spacing: 8) {
+            if !model.versionsKnown {
+                ProgressView().controlSize(.small).scaleEffect(0.8)
+                Text(L("正在检查版本…", "Checking versions…")).foregroundColor(.secondary)
+            } else if model.upToDate {
+                Image(systemName: "checkmark.seal.fill").foregroundStyle(.white, Brand.teal)
+                Text(L("已是最新版本 \(model.version)", "Up to date: \(model.version)"))
+            } else {
+                Image(systemName: "arrow.up.circle.fill").foregroundStyle(.white, Brand.sky)
+                Text(L("可升级到 \(model.version)", "\(model.version) is available")).fontWeight(.semibold)
+                Text(L("· 这台 Mac：\(model.versionLabel(model.installedHere))", "· this Mac: \(model.versionLabel(model.installedHere))"))
+                    .foregroundColor(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .font(.system(size: 12.5))
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(model.versionsKnown && !model.upToDate ? Brand.sky.opacity(0.08) : Color.primary.opacity(0.04)))
     }
 }
 
@@ -1472,7 +1555,10 @@ enum Snapshots {
                 m.problem = L("刚才说话时，前台不是 Core 的窗口。点一下 Core 的屏幕共享窗口，再说一次。", "Screen Sharing was not in front: click the window of Core, then try again.") }),
             ("11-done", { m in m.picked = mac; m.stage = .done; m.finishedAdded = true; m.finishedTitle = L("设置完成", "You're ready")
                 m.finished = L("以后在 Core 的屏幕共享窗口里，直接用 Typeless 说话就行。", "From now on, just dictate with Typeless in the Screen Sharing window of Core.") }),
-            ("12-home", { m in m.menu = true; m.controlled = ["core", "hub"] }),
+            ("12-home", { m in m.menu = true; m.controlled = ["core", "hub"]; m.versionsKnown = true
+                m.installedHere = ""; m.installedThere = ["core": "", "hub": m.version] }),
+            ("12b-home-current", { m in m.menu = true; m.controlled = ["core", "hub"]; m.versionsKnown = true
+                m.installedHere = m.version; m.installedThere = ["core": m.version, "hub": m.version] }),
             ("13-failed", { m in m.picked = mac; m.stage = .installRemote
                 m.items = [Item(id: 0, title: L("准备程序", "Prepare the apps"), state: .done), Item(id: 1, title: L("把接收端装到 Core", "Install the receiver on Core")),
                            Item(id: 2, title: L("在 Core 上打开开关", "Switch it on on Core")), Item(id: 3, title: L("启动接收端", "Start the receiver"))]
@@ -1481,7 +1567,7 @@ enum Snapshots {
         for (name, setup) in pages {
             for dark in [false, true] {
                 let m = base(); setup(m)
-                let view = NSHostingView(rootView: ContentView(model: m))
+                let view = NSHostingView(rootView: ContentView(model: m).frame(width: Metric.window.width, height: Metric.window.height))
                 view.frame = NSRect(origin: .zero, size: Metric.window)
                 let window = NSWindow(contentRect: view.frame, styleMask: [.borderless], backing: .buffered, defer: false)
                 window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)

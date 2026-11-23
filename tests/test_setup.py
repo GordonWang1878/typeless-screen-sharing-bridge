@@ -50,6 +50,7 @@ case $cmd in
   *"tar -C"*) cat > /dev/null ;;
   *--check-trust*) grep -qx trusted "$STUB/trust_remote" || echo TypelessBridgeReceiver ;;
   *"nc -U"*) cat > /dev/null; echo '{"status":"ready"}' ;;
+  *"s/^version //p"*) echo "${REMOTE_VERSION:-}" ;;
   *Privacy_Accessibility*) (sleep "${GRANT_DELAY:-2}"; echo trusted > "$STUB/trust_remote") & ;;
   *) : ;;
 esac
@@ -247,6 +248,22 @@ class StepMode(StubbedMac):
         out = self.step("preflight").stdout
         for line in ("typeless=1", "tools=1", "python=1", "version="):
             self.assertIn(line, out)
+
+    def test_versions_reports_downloaded_local_and_remote(self):
+        self.installed_with("studio-mac")
+        manifest = self.home / "Library/Application Support/TypelessRemoteBridge/manifest"
+        manifest.write_text(manifest.read_text() + "version 1.0.0\n")
+        available = (REPO / "VERSION").read_text().strip()
+        out = self.step("versions", REMOTE_VERSION="0.9.2").stdout
+        self.assertEqual(out, f"available={available}\nlocal=1.0.0\nremote studio-mac=0.9.2\n")
+        out = self.step("versions", UNREACHABLE="1").stdout
+        self.assertIn("remote studio-mac=unreachable\n", out)
+
+    def test_versions_before_they_were_recorded_are_empty(self):
+        self.installed_with("studio-mac")
+        out = self.step("versions").stdout
+        self.assertIn("local=\n", out)
+        self.assertIn("remote studio-mac=\n", out)
 
     def test_discover_marks_added(self):
         self.installed_with("studio-mac")
