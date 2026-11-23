@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.0.2 — 2026-11-23
+
+- **Removing a Mac no longer touches anything other Macs rely on.** "Remove" now only makes this
+  Mac stop controlling it: the pairing is deleted and this Mac's own key on it is revoked; its
+  receiver stays, so other Macs keep controlling it. (Before, it uninstalled that Mac's receiver
+  by default.) "Uninstall everything" also keeps those receivers unless you choose otherwise.
+- Removing a Mac edits this Mac's list in place instead of uninstalling and reinstalling, and steps
+  that change a Mac always finish even if the setup window is closed. Before, closing the window
+  at the wrong moment could leave this Mac with nothing installed.
+- The remove and uninstall confirmations say what will happen; Cancel is the default.
+- "Add a Mac" is now "Add a Mac to control", the same wording as the rest of the window. The done
+  page's fallback now says what actually works when the popup stays open: click Copy, click this
+  Mac and back into the Screen Sharing window (only then does the clipboard reach it), then paste.
+- Home page: it now answers first whether this Mac needs an upgrade ("Version … is available",
+  this Mac's version shown as "old → new"). The Macs you control are listed by name only; one
+  gets a note only when it matters (still on an older version, or not reachable).
+
 ## 1.0.1 — 2026-11-23
 
 - The setup window's home page shows versions: the one just downloaded, and the one installed on

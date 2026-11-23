@@ -50,7 +50,11 @@ ask() {  # ask <zh prompt> <en prompt> [default] -> answer on stdout
   IFS= read -r -u 3 answer || answer=""
   printf '%s' "${answer:-${3:-}}"
 }
-yes_no() { local a; a=$(ask "$1 [Y/n]" "$2 [Y/n]" y); [[ $a == y || $a == Y || $a == yes ]]; }
+yes_no() {  # yes_no <zh> <en> [y|n]: the default answer (Enter) is the third argument, yes if absent
+  local a
+  if [[ ${3:-y} == n ]]; then a=$(ask "$1 [y/N]" "$2 [y/N]" n); else a=$(ask "$1 [Y/n]" "$2 [Y/n]" y); fi
+  [[ $a == y || $a == Y || $a == yes ]]
+}
 
 # ---------- pure helpers (unit-tested) ----------
 slug() {  # "Alice's Studio" -> alice-s-studio (a valid destination name)
@@ -386,9 +390,9 @@ add_flow() {
   grant_local
   live_test "$DEST" "$PICK_NAME"
   finale "现在在 $PICK_NAME 的屏幕共享窗口里，直接用 Typeless 说话就行 🎙️
-     要再添加一台 Mac，再运行一次安装命令。" \
+     要再添加一台要控制的 Mac，再运行一次安装命令。" \
     "Just dictate with Typeless in the Screen Sharing window of $PICK_NAME 🎙️
-     To add another Mac, run the install command again."
+     To add another Mac to control, run the install command again."
 }
 
 pick_destination() {  # pick_destination <zh prompt> <en prompt> -> name on stdout
@@ -402,16 +406,12 @@ pick_destination() {  # pick_destination <zh prompt> <en prompt> -> name on stdo
 remove_flow() {
   title "移除一台 Mac" "Remove a Mac"
   local d; d=$(pick_destination "  输入要移除的那台的编号：" "  Number of the Mac to remove:") || exit 1
+  # Only this Mac stops controlling it: its receiver stays, other Macs may still use it.
   "$ENGINE" configure --remove-sender "$d" >/dev/null 2>&1 || fail "移除失败。" "Removing failed."
-  if yes_no "  同时卸载 $d 上的接收端吗？" "  Also uninstall the receiver on $d?"; then
-    if rssh "$d" "bash $REMOTE_DIR/install/typeless-bridge.sh configure --receiver off" >/dev/null 2>&1; then
-      ok "已卸载 $d 上的接收端" "Receiver on $d uninstalled"
-    else
-      bad "没能连上 ${d}，接收端还留在那边。" "Could not reach $d; its receiver is still there."
-    fi
-  fi
-  "$ENGINE" unpair "$d" >/dev/null 2>&1
-  ok "已移除 $d" "Removed $d"
+  local rc=0; "$ENGINE" unpair "$d" >/dev/null 2>&1 || rc=$?
+  ok "已移除 ${d}（它上面的接收端保留，别的 Mac 照常可以控制它）" "Removed $d (its receiver stays; other Macs can still control it)"
+  ((rc == 4)) && bad "没能连上 ${d}，这台 Mac 的钥匙还留在它上面。" "Could not reach $d; this Mac's key is still there."
+  return 0
 }
 
 upgrade_flow() {
@@ -431,7 +431,9 @@ upgrade_flow() {
 
 uninstall_flow() {
   local d dests; dests=$(destinations)
-  if [[ -n $dests ]] && yes_no "  同时卸载被控制的 Mac（${dests}）上的接收端吗？" "  Also uninstall the receivers on the Macs you control ($dests)?"; then
+  if [[ -n $dests ]] && say "  被控制的 Mac（${dests}）上的接收端默认保留：别的 Mac 若也在控制它们，照常能用。" \
+       "  The receivers on the Macs you control ($dests) stay by default, so other Macs controlling them keep working." \
+     && yes_no "  仍要把它们的接收端也卸载吗？（别的 Mac 也将无法再控制它们）" "  Uninstall their receivers anyway? (Other Macs could no longer control them either)" n; then
     for d in $dests; do
       if rssh "$d" "bash $REMOTE_DIR/install/typeless-bridge.sh configure --receiver off" >/dev/null 2>&1; then
         ok "已卸载 $d 上的接收端" "Receiver on $d uninstalled"
@@ -469,6 +471,12 @@ main() {
 step_main() {
   mkdir -p "$BUILT"
   local name=${1:-}; shift || true
+  # Steps that change this Mac or another one always run to the end: closing the window must
+  # never stop one halfway (that once left a Mac with nothing installed). Waiting steps still stop.
+  case $name in
+    connect | build | install-remote | remote-start | install-local | local-start | remove | uninstall-all)
+      trap '' TERM HUP INT ;;
+  esac
   case $name in
     preflight)
       echo "typeless=$(typeless_ready && echo 1 || echo 0)"
@@ -562,18 +570,19 @@ step_main() {
         *paste-sent-unconfirmed*) echo delivered ;; *"RESULT local") echo local ;; *"RESULT unknown") echo other-window ;;
         *RESULT*) echo "failed:${line##*RESULT }" ;; *) echo none ;;
       esac ;;
-    remove)   # remove <dest> [--remote]
+    remove)   # remove <dest>: this Mac stops controlling it. Its receiver stays (other Macs may use it).
       "$ENGINE" configure --remove-sender "$1" >/dev/null 2>&1 || return 1
-      if [[ ${2:-} == --remote ]] && ! rssh "$1" "bash $REMOTE_DIR/install/typeless-bridge.sh configure --receiver off" >/dev/null 2>&1; then
-        echo "unreachable=$1"
-      fi
-      "$ENGINE" unpair "$1" >/dev/null 2>&1; return 0 ;;
+      local rc=0; "$ENGINE" unpair "$1" >/dev/null 2>&1 || rc=$?
+      if ((rc == 4)); then echo "unreachable=$1"; fi
+      return 0 ;;
     uninstall-all)   # uninstall-all [--remote]
       local d missed=""; for d in $(destinations); do
         if [[ ${1:-} == --remote ]] && ! rssh "$d" "bash $REMOTE_DIR/install/typeless-bridge.sh configure --receiver off" >/dev/null 2>&1; then
           missed="${missed:+$missed, }$d"
         fi
-        "$ENGINE" configure --remove-sender "$d" >/dev/null 2>&1; "$ENGINE" unpair "$d" >/dev/null 2>&1
+        "$ENGINE" configure --remove-sender "$d" >/dev/null 2>&1
+        local rc=0; "$ENGINE" unpair "$d" >/dev/null 2>&1 || rc=$?
+        if ((rc == 4)) && [[ ${1:-} != --remote ]]; then missed="${missed:+$missed, }$d"; fi
       done
       for d in $(sed -n 's/^# >>> typeless-bridge //p' "$HOME/.ssh/config" 2>/dev/null); do "$ENGINE" unpair "$d" >/dev/null 2>&1; done
       [[ -n $missed ]] && echo "unreachable=$missed"

@@ -111,7 +111,6 @@ final class Model: ObservableObject {
     @Published var finishedTitle = ""
     @Published var finished = ""             // text of the final screen
     @Published var finishedAdded = false     // the final screen teaches how to use it
-    @Published var alsoRemote = true         // home: also uninstall the receiver over there
     @Published var confirmRemove: String?
     @Published var confirmUninstall = false
     @Published var upgrading = false
@@ -188,10 +187,17 @@ final class Model: ObservableObject {
         installedThere = there
         versionsKnown = true
     }
-    /// Everything installed is the version that was just downloaded.
-    var upToDate: Bool {
-        versionsKnown && !version.isEmpty && installedHere == version && controlled.allSatisfy { installedThere[$0] == version }
+    /// This Mac's own name, as the user knows it (e.g. "Air").
+    let thisMacName = Host.current().localizedName ?? ""
+    var hereBehind: Bool { versionsKnown && installedHere != version }
+    /// Controlled Macs that answered with an older version (they are upgraded together).
+    var remotesBehind: [String] {
+        versionsKnown ? controlled.filter { installedThere[$0] != version && installedThere[$0] != "unreachable" } : []
     }
+    var unreachable: [String] { versionsKnown ? controlled.filter { installedThere[$0] == "unreachable" } : [] }
+    /// Something can be upgraded: this Mac or a Mac it controls is older than what was downloaded.
+    var needsUpgrade: Bool { hereBehind || !remotesBehind.isEmpty }
+    var upToDate: Bool { versionsKnown && !version.isEmpty && !needsUpgrade }
     func versionLabel(_ v: String?) -> String {
         switch v {
         case nil: return "…"
@@ -488,21 +494,24 @@ final class Model: ObservableObject {
     }
 
     // ---- home actions
-    func remove(_ name: String, remote: Bool) async {
+    /// This Mac stops controlling `name`. Its receiver stays: other Macs may still control it.
+    func remove(_ name: String) async {
         menu = false; operation = L("移除 \(name)", "Removing \(name)"); items = []
         doing(L("正在移除 \(name)…", "Removing \(name)…"))
-        let r = await runner.run(["remove", name] + (remote ? ["--remote"] : []))
-        let left = r.value("unreachable").map { L("\n不过连不上 \($0)，那边的接收端还在，可以以后在那台 Mac 上卸载。",
-                                                   "\n\($0) could not be reached, so its receiver is still installed there.") } ?? ""
-        if r.code == 0 { finish(L("已移除", "Removed"), L("已移除 \(name)。", "\(name) is removed.") + left, added: false) }
-        else { fail(L("移除 \(name) 失败。", "Removing \(name) failed."), retry: { [unowned self] in await self.remove(name, remote: remote) }) }
+        let r = await runner.run(["remove", name])
+        let left = r.value("unreachable").map { L("\n不过刚才连不上 \($0)，这台 Mac 的钥匙还留在它上面。", "\n\($0) could not be reached, so this Mac's key is still on it.") } ?? ""
+        if r.code == 0 {
+            finish(L("已移除", "Removed"),
+                   L("这台 Mac 不再控制 \(name)。\(name) 上的接收端保留，别的 Mac 照常可以控制它。", "This Mac no longer controls \(name). Its receiver stays, so other Macs can still control it.") + left,
+                   added: false)
+        } else { fail(L("移除 \(name) 失败。", "Removing \(name) failed."), retry: { [unowned self] in await self.remove(name) }) }
     }
 
     func uninstallAll(remote: Bool) async {
         menu = false; operation = L("全部卸载", "Uninstalling"); items = []
         doing(L("正在卸载…", "Uninstalling…"))
         let r = await runner.run(["uninstall-all"] + (remote ? ["--remote"] : []))
-        let left = r.value("unreachable").map { L("\n不过连不上 \($0)，那边的接收端还在。", "\nCould not reach \($0); receivers are still installed there.") } ?? ""
+        let left = r.value("unreachable").map { L("\n不过刚才连不上 \($0)，那边的接收端或这台 Mac 的钥匙还留着。", "\nCould not reach \($0); its receiver or this Mac's key is still there.") } ?? ""
         if r.code == 0 { finish(L("已卸载", "Uninstalled"), L("这台 Mac 上的桥接已全部卸载。", "The bridge is fully uninstalled from this Mac.") + left, added: false) }
         else { fail(L("卸载没有全部完成。", "Uninstalling did not finish."), retry: { [unowned self] in await self.uninstallAll(remote: remote) }) }
     }
@@ -1008,21 +1017,31 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea()      // fill the hidden title bar too (the scene sizes the area below it)
         .tint(Brand.ink)
-        .confirmationDialog(L("移除 \(model.confirmRemove ?? "")？", "Remove \(model.confirmRemove ?? "")?"),
-                            isPresented: Binding(get: { model.confirmRemove != nil }, set: { if !$0 { model.confirmRemove = nil } })) {
+        // Cancel is the default (Return): nothing is removed by accident.
+        .alert(L("不再从这台 Mac 控制 \(model.confirmRemove ?? "")？", "Stop controlling \(model.confirmRemove ?? "") from this Mac?"),
+               isPresented: Binding(get: { model.confirmRemove != nil }, set: { if !$0 { model.confirmRemove = nil } })) {
+            Button(L("取消", "Cancel"), role: .cancel) { model.confirmRemove = nil }
             Button(L("移除", "Remove"), role: .destructive) {
                 let name = model.confirmRemove ?? ""; model.confirmRemove = nil
-                model.act { await model.remove(name, remote: model.alsoRemote) }
+                model.act { await model.remove(name) }
             }
         } message: {
-            Text(model.alsoRemote ? L("同时会卸载那台 Mac 上的接收端。", "Its receiver will be uninstalled there too.")
-                                  : L("那台 Mac 上的接收端会保留。", "Its receiver stays installed there."))
+            let name = model.confirmRemove ?? ""
+            Text(L("以后在 \(name) 的屏幕共享窗口里说话，文字不会再送过去。\(name) 上的接收端会保留，别的 Mac 照常可以控制它。",
+                   "Dictation in the Screen Sharing window of \(name) will no longer reach it. Its receiver stays, so other Macs can still control it.")
+                 + (model.controlled.count == 1
+                    ? L("\n\n这是最后一台：移除后这台 Mac 不再控制任何 Mac，用来控制的部分会一起卸载。", "\n\nIt is the last one: afterwards this Mac controls none, and its controlling part is uninstalled.")
+                    : ""))
         }
-        .confirmationDialog(L("卸载全部？", "Uninstall everything?"), isPresented: $model.confirmUninstall) {
-            Button(L("全部卸载", "Uninstall"), role: .destructive) { model.act { await model.uninstallAll(remote: model.alsoRemote) } }
+        .alert(L("卸载这台 Mac 上的桥接？", "Uninstall the bridge from this Mac?"), isPresented: $model.confirmUninstall) {
+            Button(L("取消", "Cancel"), role: .cancel) {}
+            Button(L("卸载", "Uninstall"), role: .destructive) { model.act { await model.uninstallAll(remote: false) } }
+            Button(L("连同被控 Mac 上的接收端一起卸载", "Also uninstall the receivers on the Macs it controls"), role: .destructive) {
+                model.act { await model.uninstallAll(remote: true) }
+            }
         } message: {
-            Text(model.alsoRemote ? L("这台 Mac 和所有被控 Mac 上的桥接都会被卸载。", "The bridge is removed from this Mac and from every Mac it controls.")
-                                  : L("只卸载这台 Mac 上的桥接。", "Only this Mac's part is removed."))
+            Text(L("被控 Mac 上的接收端默认保留：如果还有别的 Mac 在控制它们，照常能用。只有选第三项才会把它们也卸载，那时别的 Mac 也无法再控制它们。",
+                   "The receivers on the Macs it controls stay by default, so other Macs controlling them keep working. Only the third choice removes them too; then no Mac can control them any more."))
         }
     }
 
@@ -1159,7 +1178,7 @@ struct Footer: View {
         } else if model.menu {
             // An upgrade on offer becomes the main action; once everything is current it only reinstalls.
             if model.versionsKnown && !model.upToDate {
-                Button(L("添加一台 Mac", "Add a Mac")) { model.act { await model.addAnother() } }.disabled(model.busy)
+                Button(L("添加要控制的 Mac", "Add a Mac to control")) { model.act { await model.addAnother() } }.disabled(model.busy)
                 Button(L("升级到 \(model.version)", "Upgrade to \(model.version)")) {
                     model.reinstalling = false; model.upgrading = true; model.act { await model.check() }
                 }
@@ -1169,12 +1188,12 @@ struct Footer: View {
                     model.reinstalling = model.upToDate; model.upgrading = true; model.act { await model.check() }
                 }
                 .disabled(model.busy || !model.versionsKnown)
-                Button(L("添加一台 Mac", "Add a Mac")) { model.act { await model.addAnother() } }
+                Button(L("添加要控制的 Mac", "Add a Mac to control")) { model.act { await model.addAnother() } }
                     .keyboardShortcut(.defaultAction).buttonStyle(BrandButtonStyle()).disabled(model.busy)
             }
         } else if model.stage == .done {
             if model.finishedAdded {
-                Button(L("再添加一台 Mac", "Add another Mac")) { model.act { await model.addAnother() } }
+                Button(L("再添加一台要控制的 Mac", "Add another Mac to control")) { model.act { await model.addAnother() } }
             }
             Button(L("完成", "Done")) { NSApp.terminate(nil) }.keyboardShortcut(.defaultAction).buttonStyle(BrandButtonStyle())
         } else if model.stage == .choose && model.operation == nil {
@@ -1236,66 +1255,98 @@ struct Notes: View {
     }
 }
 
+/// Home. It answers one question first: does this Mac need an upgrade? The Macs it controls are
+/// only listed by name; one gets a note only when it matters (still older, or not reachable).
 struct HomeView: View {
     @ObservedObject var model: Model
     var body: some View {
         VStack(spacing: 18) {
-            PageHeader(model: model, title: L("桥接已经装好", "The bridge is installed"),
-                       subtitle: L("在下面这些 Mac 的屏幕共享窗口里，直接用 Typeless 说话就行。", "Dictate with Typeless in the Screen Sharing window of these Macs."))
-            VStack(spacing: 0) {
-                ForEach(Array(model.controlled.enumerated()), id: \.offset) { i, name in
-                    if i > 0 { Divider().padding(.leading, 54) }
-                    HStack(spacing: 12) {
-                        Image(systemName: "desktopcomputer").font(.system(size: 17)).foregroundStyle(Brand.gradient)
-                            .frame(width: 30, height: 30)
-                            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Brand.sky.opacity(0.10)))
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(name).font(.system(size: 13, weight: .medium))
-                            if model.versionsKnown {
-                                Text(L("版本 ", "Version ") + model.versionLabel(model.installedThere[name]))
-                                    .font(.system(size: 11)).foregroundColor(.secondary)
-                            }
-                        }
-                        Spacer()
-                        Button(L("移除…", "Remove…")) { model.confirmRemove = name }
-                            .buttonStyle(.borderless).foregroundColor(.secondary).disabled(model.busy)
-                    }
-                    .padding(.vertical, 9)
-                }
+            if model.needsUpgrade {
+                PageHeader(model: model, title: L("有新版本 \(model.version)", "Version \(model.version) is available"),
+                           subtitle: model.hereBehind
+                               ? L("升级会同时更新这台 Mac 和它控制的 Mac。", "Upgrading updates this Mac and the Macs it controls.")
+                               : L("这台 Mac 已是最新，但有被控制的 Mac 还是旧版本。", "This Mac is up to date, but a Mac it controls is not."))
+            } else {
+                PageHeader(model: model, title: L("桥接已经装好", "The bridge is installed"),
+                           subtitle: L("在下面这些 Mac 的屏幕共享窗口里，直接用 Typeless 说话就行。", "Dictate with Typeless in the Screen Sharing window of these Macs."))
             }
-            .card(padding: 12)
-            VersionLine(model: model)
-            Toggle(L("移除或卸载时，同时卸载那台 Mac 上的接收端", "When removing, also uninstall the receiver on that Mac"), isOn: $model.alsoRemote)
-                .toggleStyle(.checkbox).font(.system(size: 12)).foregroundColor(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            ThisMacCard(model: model)
+            VStack(alignment: .leading, spacing: 8) {
+                Text(L("被控制的 Mac", "Macs you control")).font(.system(size: 12, weight: .semibold)).foregroundColor(.secondary)
+                    .padding(.leading, 4)
+                VStack(spacing: 0) {
+                    ForEach(Array(model.controlled.enumerated()), id: \.offset) { i, name in
+                        if i > 0 { Divider().padding(.leading, 54) }
+                        HStack(spacing: 12) {
+                            Image(systemName: "desktopcomputer").font(.system(size: 17)).foregroundStyle(Brand.gradient)
+                                .frame(width: 30, height: 30)
+                                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Brand.sky.opacity(0.10)))
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(name).font(.system(size: 13, weight: .medium))
+                                if model.remotesBehind.contains(name) {
+                                    Text(L("还是旧版本，升级时会一起更新", "Still on an older version; upgrading updates it too"))
+                                        .font(.system(size: 11)).foregroundColor(Brand.ink)
+                                } else if model.unreachable.contains(name) {
+                                    Text(L("现在连不上：升级前请确认它已开机、在同一个网络里", "Not reachable now: before upgrading, make sure it is on and on the same network"))
+                                        .font(.system(size: 11)).foregroundColor(.orange)
+                                }
+                            }
+                            Spacer()
+                            Button(L("移除…", "Remove…")) { model.confirmRemove = name }
+                                .buttonStyle(.borderless).foregroundColor(.secondary).disabled(model.busy)
+                        }
+                        .padding(.vertical, 8)
+                    }
+                }
+                .card(padding: 12)
+            }
             Notes(model: model)
         }
     }
 }
 
-/// Home: are the installed versions the one just downloaded?
-struct VersionLine: View {
+/// The main fact of the home page: this Mac's version, and what an upgrade would change.
+struct ThisMacCard: View {
     @ObservedObject var model: Model
+    var name: String {
+        model.thisMacName.isEmpty ? L("这台 Mac", "This Mac") : L("\(model.thisMacName)（这台 Mac）", "\(model.thisMacName) (this Mac)")
+    }
     var body: some View {
-        HStack(spacing: 8) {
-            if !model.versionsKnown {
-                ProgressView().controlSize(.small).scaleEffect(0.8)
-                Text(L("正在检查版本…", "Checking versions…")).foregroundColor(.secondary)
-            } else if model.upToDate {
-                Image(systemName: "checkmark.seal.fill").foregroundStyle(.white, Brand.teal)
-                Text(L("已是最新版本 \(model.version)", "Up to date: \(model.version)"))
-            } else {
-                Image(systemName: "arrow.up.circle.fill").foregroundStyle(.white, Brand.sky)
-                Text(L("可升级到 \(model.version)", "\(model.version) is available")).fontWeight(.semibold)
-                Text(L("· 这台 Mac：\(model.versionLabel(model.installedHere))", "· this Mac: \(model.versionLabel(model.installedHere))"))
-                    .foregroundColor(.secondary)
+        HStack(spacing: 14) {
+            Image(systemName: "laptopcomputer").font(.system(size: 22)).foregroundStyle(Brand.gradient)
+                .frame(width: 44, height: 44)
+                .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(Brand.sky.opacity(0.10)))
+            VStack(alignment: .leading, spacing: 4) {
+                Text(name).font(.system(size: 12)).foregroundColor(.secondary)
+                if !model.versionsKnown {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small).scaleEffect(0.8)
+                        Text(L("正在检查版本…", "Checking versions…")).font(.system(size: 15)).foregroundColor(.secondary)
+                    }
+                } else if model.hereBehind {
+                    HStack(spacing: 10) {
+                        Text(model.versionLabel(model.installedHere)).foregroundColor(.secondary)
+                        Image(systemName: "arrow.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(Brand.gradient)
+                        Text(model.version).fontWeight(.semibold)
+                    }
+                    .font(.system(size: 17))
+                } else {
+                    HStack(spacing: 8) {
+                        Text(model.version).font(.system(size: 17, weight: .semibold))
+                        Label(L("已是最新", "Up to date"), systemImage: "checkmark.seal.fill")
+                            .font(.system(size: 12, weight: .medium)).foregroundStyle(Brand.teal)
+                    }
+                }
             }
             Spacer(minLength: 0)
         }
-        .font(.system(size: 12.5))
-        .padding(.horizontal, 14).padding(.vertical, 10)
-        .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(model.versionsKnown && !model.upToDate ? Brand.sky.opacity(0.08) : Color.primary.opacity(0.04)))
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Surface.card))
+        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(model.hereBehind ? Brand.sky.opacity(0.06) : .clear))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .strokeBorder(model.hereBehind ? Brand.sky.opacity(0.4) : Surface.edge, lineWidth: model.hereBehind ? 1 : 0.5))
+        .shadow(color: Surface.shadow, radius: 14, x: 0, y: 5)
     }
 }
 
@@ -1485,7 +1536,8 @@ struct DoneView: View {
                     Rule(symbol: "checkmark.circle.fill", color: Brand.teal,
                          text: L("Typeless 的\"复制\"弹窗自动关掉 = 文字已经送到。", "Typeless' Copy popup closes by itself = the text arrived."))
                     Rule(symbol: "exclamationmark.circle.fill", color: .orange,
-                         text: L("弹窗一直不关 = 这句没送到。点\"复制\"，再手动粘贴就行。", "The popup stays open = that sentence did not arrive. Click Copy and paste it yourself."))
+                         text: L("弹窗一直不关 = 这句没送到。点\"复制\"，再点一下这台 Mac 的别处、点回屏幕共享窗口（剪贴板这时才同步过去），然后粘贴。",
+                                 "The popup stays open = that sentence did not arrive. Click Copy, click somewhere on this Mac and back into the Screen Sharing window (only then does the clipboard reach it), then paste."))
                 }
                 .card(radius: 16, padding: 18)
                 .padding(.top, 20)
@@ -1559,6 +1611,8 @@ enum Snapshots {
                 m.installedHere = ""; m.installedThere = ["core": "", "hub": m.version] }),
             ("12b-home-current", { m in m.menu = true; m.controlled = ["core", "hub"]; m.versionsKnown = true
                 m.installedHere = m.version; m.installedThere = ["core": m.version, "hub": m.version] }),
+            ("12c-home-remote-behind", { m in m.menu = true; m.controlled = ["core", "hub"]; m.versionsKnown = true
+                m.installedHere = m.version; m.installedThere = ["core": "", "hub": "unreachable"] }),
             ("13-failed", { m in m.picked = mac; m.stage = .installRemote
                 m.items = [Item(id: 0, title: L("准备程序", "Prepare the apps"), state: .done), Item(id: 1, title: L("把接收端装到 Core", "Install the receiver on Core")),
                            Item(id: 2, title: L("在 Core 上打开开关", "Switch it on on Core")), Item(id: 3, title: L("启动接收端", "Start the receiver"))]

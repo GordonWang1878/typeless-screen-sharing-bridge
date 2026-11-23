@@ -21,7 +21,9 @@
 #                    USER@HOST (Remote Login must be on there). Asks to confirm the host key
 #                    fingerprint, then for the remote password once. --fingerprint skips the
 #                    question by comparing automatically.
-#   unpair           remove the ssh setup that pair added for NAME.
+#   unpair           remove the ssh setup that pair added for NAME, and this Mac's key on NAME
+#                    (exit 4 if NAME could not be reached to remove the key). NAME's receiver and
+#                    other Macs' access to it are left alone.
 #
 # Everything installed is listed in "$ROOT/manifest"; uninstall removes exactly that.
 # After install, grant Privacy & Security -> Device Control to the apps printed at the end.
@@ -47,6 +49,12 @@ say() { echo "== $*"; }
 loaded() { "$LAUNCHCTL" print "$DOMAIN/$1" >/dev/null 2>&1; }
 xml() { local s=${1//&/&amp;}; s=${s//</&lt;}; s=${s//>/&gt;}; printf '%s' "$s"; }
 
+sender_plist() {  # sender_plist <dests>: the sender's LaunchAgent for these destinations
+  plist "$SENDER_LABEL" always "$LOGS/sender.log" "$LOGS/sender.err.log" \
+    /usr/bin/python3 -u "$SERVICE/sender.py" --destinations "$1" \
+    --focus-app "$APPS/TypelessBridgeProbe.app" --guard-app "$APPS/TypelessBridgeGuard.app" \
+    --lock-file "$ROOT/sender.lock" --identities-file "$ROOT/identities.json"
+}
 plist() {  # plist <label> <keepalive: always|on-failure> <stdout> <stderr> <program args...>
   local label=$1 keep=$2 out=$3 err=$4; shift 4
   echo '<?xml version="1.0" encoding="UTF-8"?>'
@@ -151,11 +159,7 @@ cmd_install() {
   if [[ -n $dests ]]; then
     mkdir -p "$SERVICE"
     for a in "${SERVICE_FILES[@]}"; do cp "$REPO/service/$a" "$SERVICE/$a"; done
-    plist "$SENDER_LABEL" always "$LOGS/sender.log" "$LOGS/sender.err.log" \
-      /usr/bin/python3 -u "$SERVICE/sender.py" --destinations "$dests" \
-      --focus-app "$APPS/TypelessBridgeProbe.app" --guard-app "$APPS/TypelessBridgeGuard.app" \
-      --lock-file "$ROOT/sender.lock" --identities-file "$ROOT/identities.json" \
-      > "$AGENTS/$SENDER_LABEL.plist"
+    sender_plist "$dests" > "$AGENTS/$SENDER_LABEL.plist"
     plutil -lint "$AGENTS/$SENDER_LABEL.plist" >/dev/null
     echo "agent $SENDER_LABEL" >> "$manifest"
   fi
@@ -249,6 +253,22 @@ cmd_configure() {
   [[ $receiver == off ]] && rec=0
   if [[ -z $list && $rec == 0 ]]; then
     [[ -e "$ROOT/manifest" ]] && cmd_uninstall --purge-state
+    return 0
+  fi
+  # Removing one Mac while this one still controls others only edits the list in place: the apps,
+  # their Device Control approvals and the receiver are never touched, so an interruption can
+  # never leave this Mac with nothing installed.
+  if [[ -n $remove && -z $add && -z $receiver && -n $list && -e "$ROOT/manifest" ]] \
+     && grep -q "^agent $SENDER_LABEL" "$ROOT/manifest"; then
+    sender_plist "$list" > "$AGENTS/$SENDER_LABEL.plist.tmp"
+    plutil -lint "$AGENTS/$SENDER_LABEL.plist.tmp" >/dev/null
+    mv "$AGENTS/$SENDER_LABEL.plist.tmp" "$AGENTS/$SENDER_LABEL.plist"
+    sed "s/^options sender=[^ ]*/options sender=$list/" "$ROOT/manifest" > "$ROOT/manifest.tmp"
+    mv "$ROOT/manifest.tmp" "$ROOT/manifest"
+    if loaded "$SENDER_LABEL"; then "$LAUNCHCTL" bootout "$DOMAIN/$SENDER_LABEL" || true; fi
+    "$LAUNCHCTL" bootstrap "$DOMAIN" "$AGENTS/$SENDER_LABEL.plist" 2>/dev/null \
+      || { sleep 1; "$LAUNCHCTL" bootstrap "$DOMAIN" "$AGENTS/$SENDER_LABEL.plist" || die "could not restart the sender"; }
+    say "no longer sending to $remove; still sending to $list"
     return 0
   fi
   # Check everything that could fail before touching the working install, so a Mac that is asleep
@@ -400,9 +420,23 @@ cmd_unpair() {
   local name=${1:-}
   valid_name "$name" || die "usage: unpair NAME"
   grep -qxF "$(block_begin "$name")" "$SSH_DIR/config" 2>/dev/null || die "$name was not paired by this script"
+  # Revoke only this Mac's own key over there (matched by its contents): other Macs that control
+  # the same Mac keep their access, and its receiver is left alone.
+  local blob revoked=1
+  blob=$(awk '{print $2}' "$BRIDGE_KEY.pub" 2>/dev/null || true)
+  if [[ $blob =~ ^[A-Za-z0-9+/=]+$ ]]; then
+    ssh -T -o BatchMode=yes -o ConnectTimeout=5 "$name" \
+      "f=\$HOME/.ssh/authorized_keys; [ -f \"\$f\" ] || exit 0; { grep -vF '$blob' \"\$f\" || true; } > \"\$f.tb\" && cat \"\$f.tb\" > \"\$f\"; rm -f \"\$f.tb\"" \
+      </dev/null >/dev/null 2>&1 || revoked=0
+  fi
   remove_block "$name" "$SSH_DIR/config"
   ssh-keygen -R "typeless-bridge-$name" -f "$SSH_DIR/known_hosts" >/dev/null 2>&1 || true
-  say "removed Host $name. Its key stays in ~/.ssh/authorized_keys on that Mac (comment: typeless-bridge)."
+  if ((revoked)); then
+    say "removed Host $name and this Mac's key on it"
+  else
+    say "removed Host $name; could not reach it, so this Mac's key is still in its ~/.ssh/authorized_keys"
+    return 4
+  fi
 }
 
 cmd_status() {

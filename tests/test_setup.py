@@ -7,6 +7,7 @@ Answers come from a file instead of the terminal.
 import os
 import shutil
 import subprocess
+import time
 import tempfile
 import unittest
 from pathlib import Path
@@ -57,6 +58,8 @@ esac
 """,
     "engine": r"""#!/bin/bash
 echo "engine $*" >> "$STUB/calls"
+[[ $1 == unpair && -n ${UNREACHABLE:-} ]] && exit 4
+[[ $1 == configure && -n ${ENGINE_DELAY:-} ]] && sleep "$ENGINE_DELAY"
 root="$HOME/Library/Application Support/TypelessRemoteBridge"; m="$root/manifest"
 dests=$(sed -n 's/^options .*sender=\([^ ]*\).*/\1/p' "$m" 2>/dev/null); [[ $dests == none ]] && dests=""
 rec=$(sed -n 's/^options .*receiver=\([^ ]*\).*/\1/p' "$m" 2>/dev/null); rec=${rec:-0}
@@ -198,8 +201,10 @@ class SetupWizard(StubbedMac):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         calls = self.calls()
         self.assertIn("engine configure --remove-sender studio-mac", calls)
-        self.assertTrue(any(c.startswith("ssh studio-mac") and "configure --receiver off" in c for c in calls))
         self.assertIn("engine unpair studio-mac", calls)
+        # Only this Mac stops controlling it: the receiver over there stays for other Macs.
+        self.assertFalse(any("configure --receiver off" in c for c in calls))
+        self.assertIn("its receiver stays", r.stdout)
 
     def test_upgrade_updates_remote_then_local(self):
         self.installed_with("studio-mac")
@@ -212,11 +217,18 @@ class SetupWizard(StubbedMac):
 
     def test_uninstall_everything(self):
         self.installed_with("studio-mac")
-        r = self.run_setup("x\n\n")
+        r = self.run_setup("x\n\n")                       # Enter: keep the receivers (the default)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         calls = self.calls()
-        self.assertTrue(any(c.startswith("ssh studio-mac") and "configure --receiver off" in c for c in calls))
+        self.assertFalse(any("configure --receiver off" in c for c in calls))
         self.assertIn("engine configure --remove-sender studio-mac", calls)
+        self.assertIn("engine unpair studio-mac", calls)
+
+    def test_uninstall_everything_with_receivers_only_when_asked(self):
+        self.installed_with("studio-mac")
+        r = self.run_setup("x\ny\n")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(any(c.startswith("ssh studio-mac") and "configure --receiver off" in c for c in self.calls()))
 
     def test_without_typeless_explains_where_to_run(self):
         (self.home / "Library/Application Support/Typeless/typeless.db").unlink()
@@ -309,9 +321,20 @@ class StepMode(StubbedMac):
 
     def test_remove_reports_an_unreachable_remote(self):
         self.installed_with("studio-mac")
-        r = self.step("remove", "studio-mac", "--remote", UNREACHABLE="1")
+        r = self.step("remove", "studio-mac", UNREACHABLE="1")
         self.assertEqual(r.returncode, 0)
         self.assertIn("unreachable=studio-mac", r.stdout)
+        self.assertFalse(any("configure --receiver off" in c for c in self.calls()))
+
+    def test_closing_the_window_does_not_stop_a_change_halfway(self):
+        self.installed_with("studio-mac")
+        env = dict(self.env, ENGINE_DELAY="1.5")
+        p = subprocess.Popen(["bash", str(SETUP), "--step", "remove", "studio-mac"], env=env,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(0.5)
+        p.terminate()                                            # what the window does when it closes
+        p.wait(timeout=20)
+        self.assertIn("engine unpair studio-mac", self.calls())
 
     def test_typed_name_that_does_not_resolve(self):
         self.assertEqual(self.step("ssh-open", "no-such-mac-xyz.invalid").returncode, 3)

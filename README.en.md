@@ -99,7 +99,7 @@ A setup window opens (you can close Terminal then) and walks you through it:
 </table>
 
 - Nothing to install by hand on the Mac you control.
-- Each run adds one Mac. To control another one, remove one, upgrade or uninstall, run the same
+- Each run adds one Mac to control. To control another one, remove one, upgrade or uninstall, run the same
   line again.
 - The first run spends about 30 seconds preparing the setup window on your Mac; Terminal shows
   the progress.
@@ -135,7 +135,13 @@ yet.
 Device Control, remove TypelessBridgeGuard with "−" (it reappears by itself) and switch it on
 again. macOS occasionally lets this permission go stale while the switch still looks on.
 
-**How do I uninstall?** Run the install line again and choose "Uninstall…" in the window.
+**Does removing a Mac affect other Macs?** No. "Remove" only makes this Mac stop controlling it: the
+pairing between the two is deleted and this Mac's key on it is revoked. Its receiver stays, so
+other Macs can still control it.
+
+**How do I uninstall?** Run the install line again and choose "Uninstall…" in the window. The
+receivers on the Macs you control stay by default (other Macs may still use them); the
+confirmation offers a separate choice to uninstall them too.
 
 ## More
 

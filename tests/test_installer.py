@@ -136,6 +136,24 @@ class InstallerTest(unittest.TestCase):
         self.env["TB_TCCUTIL"] = str(stub)
         return self.tmp / "tcc"
 
+    def test_removing_one_mac_edits_the_list_in_place(self):
+        tcc = self.tcc_stub()
+        self.env["SSH_ALREADY_OK"] = "hub,mars"
+        r = self.run_script("install", "--sender", "hub,mars", "--apps-dir", str(self.apps))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        guard = self.root / "Apps/TypelessBridgeGuard.app/Contents/MacOS/TypelessBridgeGuard"
+        before = guard.stat().st_ino
+        r = self.run_script("configure", "--remove-sender", "mars")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        manifest = (self.root / "manifest").read_text()
+        self.assertIn("options sender=hub receiver=0", manifest)
+        self.assertIn("agent org.local.typelessbridge.sender", manifest)
+        self.assertEqual(guard.stat().st_ino, before, "the apps must not be reinstalled")
+        self.assertFalse(tcc.exists(), "approvals must not be touched")
+        args = plistlib.loads((self.agents / "org.local.typelessbridge.sender.plist").read_bytes())["ProgramArguments"]
+        self.assertEqual(args[args.index("--destinations") + 1], "hub")
+        self.assertTrue(any("bootstrap" in c and "sender" in c for c in self.calls()))
+
     def test_configure_adds_and_removes_roles_keeping_permissions(self):
         tcc = self.tcc_stub()
         r = self.run_script("configure", "--receiver", "on", "--apps-dir", str(self.apps))
@@ -283,6 +301,24 @@ class PairTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.config.read_text(), "Host studio\n  HostName 192.0.2.5\n")
         self.assertIn("already in", r.stdout)
+
+    def test_unpair_revokes_only_this_macs_key_over_there(self):
+        r = self.run_script("pair", "studio", "alice@studio.local", "--fingerprint", self.fingerprint)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        blob = (self.home / ".ssh/typeless_bridge_ed25519.pub").read_text().split()[1]
+        r = self.run_script("unpair", "studio")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        revoke = [c for c in (self.tmp / "ssh-calls").read_text().splitlines() if "authorized_keys" in c]
+        self.assertEqual(len(revoke), 1)
+        self.assertIn(f"grep -vF '{blob}'", revoke[0])        # matched by this Mac's key, nothing else
+
+    def test_unpair_of_an_unreachable_mac_still_unpairs_here(self):
+        r = self.run_script("pair", "studio", "alice@studio.local", "--fingerprint", self.fingerprint)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        (self.tmp / "authorized").unlink()                     # the stub ssh now fails
+        r = self.run_script("unpair", "studio")
+        self.assertEqual(r.returncode, 4)
+        self.assertNotIn("Host studio", self.config.read_text())
 
     def test_repair_replaces_block_and_unpair_removes_it(self):
         self.config.parent.mkdir()

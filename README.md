@@ -92,7 +92,7 @@ curl -fsSL https://raw.githubusercontent.com/GordonWang1878/typeless-screen-shar
 </table>
 
 - 被控制的那台 Mac 上不需要你手动安装任何东西。
-- 每运行一次添加一台 Mac。想再控制一台、移除、升级或卸载，再运行同一行命令即可。
+- 每运行一次添加一台要控制的 Mac。想再控制一台、移除、升级或卸载，再运行同一行命令即可。
 - 第一次运行时，安装窗口要在你的 Mac 上准备大约 30 秒，终端里会显示进度。
 - 也可以让你的编程助手（Claude Code、Codex 等）帮你装，把 [AGENTS.md](AGENTS.md) 交给它就行。
 
@@ -116,7 +116,9 @@ curl -fsSL https://raw.githubusercontent.com/GordonWang1878/typeless-screen-shar
 
 **又出现了多余的 "V"？** 在你说话的那台 Mac 上打开"系统设置 → 隐私与安全性 → 设备控制"，用"−"删掉 TypelessBridgeGuard，它会自动重新出现，再把开关打开。macOS 偶尔会让这个授权悄悄失效：开关看起来是开着的，实际已经不起作用。
 
-**怎么卸载？** 再运行安装命令，在窗口里选"全部卸载…"。
+**移除一台 Mac 会影响别的 Mac 吗？** 不会。"移除"只是让这台 Mac 不再控制它：删掉两台之间的配对，并撤销这台 Mac 在它上面的钥匙。它上面的接收端保留，别的 Mac 照常可以控制它。
+
+**怎么卸载？** 再运行安装命令，在窗口里选"全部卸载…"。被控 Mac 上的接收端默认保留（别的 Mac 可能还在用）；确认框里另有一项，可以把它们也一起卸载。
 
 ## 更多
 
